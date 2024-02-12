@@ -176,10 +176,13 @@ void compute_gemm_distances (cublasHandle_t& handle, const uint32_t d1, const ui
       printf("\n");
     #endif
 
-    CHECK_CUBLAS_ERROR(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, // c * P
-                                    k, d1, d1, &alpha,
-                                    d_C, k,
+    // c * P
+    CHECK_CUBLAS_ERROR(cublasSsymm(handle, 
+                                    CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER, 
+                                    k, d1, 
+                                    &alpha,
                                     P, d1,
+                                    d_C, k,
                                     &beta, d_tmp, k));
 
     #if DEBUG_GEMM
