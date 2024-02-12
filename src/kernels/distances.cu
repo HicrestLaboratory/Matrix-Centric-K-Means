@@ -145,7 +145,9 @@ uint32_t last_nk = 0;
  * @param d_C the matrix of centers (prefixed with 1s)
  * @param d_distances size: n * k
  */
-void compute_gemm_distances (cublasHandle_t& handle, const uint32_t d1, const uint32_t n, const uint32_t k, const DATA_TYPE* d_P, const DATA_TYPE* d_C, DATA_TYPE* d_distances) {
+void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProps, 
+                              const uint32_t d1, const uint32_t n, const uint32_t k, 
+                              const DATA_TYPE* d_P, const DATA_TYPE* d_C, DATA_TYPE* d_distances) {
   DATA_TYPE alpha = (DATA_TYPE)1;
   DATA_TYPE beta = (DATA_TYPE)0;
   uint32_t d1d1 = d1 * d1;
@@ -178,6 +180,7 @@ void compute_gemm_distances (cublasHandle_t& handle, const uint32_t d1, const ui
     #endif
 
     // c * P
+    // P is symmetric
     CHECK_CUBLAS_ERROR(cublasSsymm(handle, 
                                     CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER, 
                                     k, d1, 
@@ -201,21 +204,41 @@ void compute_gemm_distances (cublasHandle_t& handle, const uint32_t d1, const ui
                                     d_C, k,
                                     &beta, d_tmp, k));
 
+    int num_blocks = 0;
+    int num_threads = 0;
+    schedule_copy_diag(deviceProps, k, &num_blocks, &num_threads);
 
-    for (size_t i = 0; i < k; i++) {
-      CHECK_CUBLAS_ERROR(cublasGetMatrix(k, k, sizeof(DATA_TYPE), d_tmp, k, h_tmp, k));
-      h_distances[p_i * k + i] = h_tmp[IDX2C(i, i, k)];
-    }
+    // Copy distances to GPU
+    copy_diag<<<num_blocks, num_threads>>>(d_tmp, d_distances, k, p_i*k);
+
 
     #if DEBUG_GEMM
+      CHECK_CUBLAS_ERROR(cublasGetMatrix(k,k,sizeof(DATA_TYPE), d_tmp, k, h_tmp, k));
       printf("Distances from P_%d\n", p_i);
       printMatrixColMajLimited(h_tmp, k, k, 5, 5);
       printf("\n----------\n");
     #endif
   }
-  // Copy distances to GPU
-  CHECK_CUDA_ERROR(cudaMemcpy(d_distances, h_distances, n * k * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
+  CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 }
+
+
+void schedule_copy_diag(cudaDeviceProp * props, const int k, int * num_blocks, int * num_threads) {
+  *num_threads = (k < props->maxThreadsPerBlock) ? k : props->maxThreadsPerBlock;
+  *num_blocks = ceil(static_cast<float>(k) / static_cast<float>(*num_threads));  
+}
+
+
+__global__ void copy_diag(const DATA_TYPE * d_tmp, DATA_TYPE * d_distances, const int k, const int offset) {
+  
+  int idx = threadIdx.x + blockIdx.x * blockDim.x;
+
+  if (idx<k) {
+    d_distances[offset + idx] = d_tmp[idx*k+idx];
+  }
+
+}
+
 
 void compute_gemm_distances_free () {
   if (d_tmp != NULL) CHECK_CUDA_ERROR(cudaFree(d_tmp));

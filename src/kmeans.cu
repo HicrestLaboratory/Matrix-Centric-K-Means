@@ -188,7 +188,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
       }
     #else
       CHECK_CUBLAS_ERROR(cublasSetMatrix(k, d1, sizeof(DATA_TYPE), h_centroids_matrix, k, d_centroids_matrix, k)); // same as CHECK_CUDA_ERROR(cudaMemcpy(d_centroids_matrix, h_centroids_matrix, CENTROIDS_BYTES, cudaMemcpyHostToDevice));
-      compute_gemm_distances(cublasHandle, d1, n, k, d_points_assoc_matrices, d_centroids_matrix, d_distances);
+      compute_gemm_distances(cublasHandle, deviceProps, d1, n, k, d_points_assoc_matrices, d_centroids_matrix, d_distances);
     #endif
     #if PERFORMANCES_KERNEL_DISTANCES
       cudaEventRecord(e_perf_dist_stop);
