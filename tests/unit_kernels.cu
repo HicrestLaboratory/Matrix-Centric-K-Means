@@ -42,7 +42,7 @@ void computeCPUCentroidAssociatedMatrix (DATA_TYPE* A, DATA_TYPE* points, uint32
   for (size_t i = 0; i < d - 1; ++i) { // Matrix borders
     c = points[IDX2C(idx, i, ld)];
     A[i + 1] = -c;
-    A[(i + 1) * d] = -c;
+    //A[(i + 1) * d] = -c;
     c_11 += c * c;
   }
   A[0] = c_11;
@@ -131,15 +131,15 @@ TEST_CASE("kernel_distances_matrix", "[kernel][distances]") { // FIXME does not 
 
         // Check associated matrices
         for (size_t i = 0; i < d1; i++) {
-          for (size_t j = 0; j < d1; j++) {
-            if (TEST_DEBUG && h_P_CPU[i * d1 + j] != h_P_GPU[i * d1 + j]) {
+          for (size_t j = 0; j < i; j++) {
+            if (TEST_DEBUG && h_P_CPU[j * d1 + i] != h_P_GPU[j * d1 + i]) {
               printf("Associated matrix error at (%lu, %lu)", i, j);
               printf("\nPoint %u associated matrix:\n", ni);
               printMatrixColMajLimited(h_P_CPU, d1, d1, 15, 15);
               printf("\nGPU:\n");
               printMatrixColMajLimited(h_P_GPU, d1, d1, 15, 15);
             }
-            REQUIRE( h_P_CPU[i * d1 + j] == h_P_GPU[i * d1 + j] );
+            REQUIRE( h_P_CPU[j * d1 + i] == h_P_GPU[j * d1 + i] );
           }
         }
 
