@@ -123,8 +123,9 @@ __global__ void compute_point_associated_matrices (const DATA_TYPE* points, DATA
   if (threadIdx.x == 0) {
     associated_matrices[matrix_base_i] += c_11; // Write reduced c_11
   }
+
+  // Only need to write first column, since the points associated matrices are symmetric
   associated_matrices[matrix_base_i + d_i1] = -c;               // Write first column
-  associated_matrices[matrix_base_i + (d_i1 * d1)] = -c;        // Write first row
   associated_matrices[matrix_base_i + (d_i1 * d1) + d_i1] = 1;  // Write diagonal
 }
 
