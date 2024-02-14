@@ -6,7 +6,8 @@
 #include "../cuda_utils.cuh"
 #include "../kmeans.cuh"
 
-#define DEBUG_GEMM 0
+//#define DEBUG_GEMM 1
+//#define BATCHED_GEMM
 
 /*** Warp oriented ***/
 
@@ -124,9 +125,11 @@ __global__ void compute_point_associated_matrices (const DATA_TYPE* points, DATA
     associated_matrices[matrix_base_i] += c_11; // Write reduced c_11
   }
 
-  // Only need to write first column, since the points associated matrices are symmetric
   associated_matrices[matrix_base_i + d_i1] = -c;               // Write first column
   associated_matrices[matrix_base_i + (d_i1 * d1) + d_i1] = 1;  // Write diagonal
+#ifdef BATCHED_GEMM
+  associated_matrices[matrix_base_i + d_i1*d1] = -c; //if using batched gemm, need to store entire matrix since no batched symm
+#endif
 }
 
 DATA_TYPE* d_tmp = NULL; // https://docs.nvidia.com/cuda/cublas/index.html#cublas-t-gemm
@@ -164,20 +167,42 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
     h_tmp = new DATA_TYPE[max_k_d1 * max_k_d1];
   }
 
+  DATA_TYPE * d_tmp_arr;
+  CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_tmp_arr), sizeof(DATA_TYPE) * n * k * k));
+
+#ifdef BATCHED_GEMM
+  // Replicate c n times
+  
+  DATA_TYPE * d_C_arr;
+  CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_C_arr), sizeof(DATA_TYPE) * d1 * k * n));
+  CHECK_CUDA_ERROR(cudaMemcpy2D(d_C_arr, sizeof(DATA_TYPE) * d1 * n, 
+                                d_C, d1, 
+                                sizeof(DATA_TYPE)*d1, sizeof(DATA_TYPE)*k, 
+                                cudaMemcpyDeviceToDevice));
+
+  CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle,
+                                        CUBLAS_OP_N, CUBLAS_OP_N,
+                                        k, d1, d1,
+                                        &alpha,
+
+
+#else
+
   for (uint32_t p_i = 0; p_i < n; ++p_i, P += d1d1) { // Iterate over points associated matrices
-    #if DEBUG_GEMM
-      printf("\nc\n");
-      DATA_TYPE* tmp_debug1 = new DATA_TYPE[n * d1];
-      CHECK_CUBLAS_ERROR(cublasGetMatrix(k, d1, sizeof(DATA_TYPE), d_C, k, tmp_debug1, k));
-      printMatrixColMajLimited(tmp_debug1, k, d1, 5, 5);
-      printf("\nP_%d associated matrix\n", p_i);
-      DATA_TYPE* tmp_debug = new DATA_TYPE[d1d1];
-      CHECK_CUBLAS_ERROR(cublasGetMatrix(d1, d1, sizeof(DATA_TYPE), P, d1, tmp_debug, d1));
-      printMatrixColMajLimited(tmp_debug, d1, d1, 5, 5);
-      delete[] tmp_debug;
-      delete[] tmp_debug1;
-      printf("\n");
-    #endif
+#if DEBUG_GEMM
+    printf("\nc\n");
+    DATA_TYPE* tmp_debug1 = new DATA_TYPE[n * d1];
+    CHECK_CUBLAS_ERROR(cublasGetMatrix(k, d1, sizeof(DATA_TYPE), d_C, k, tmp_debug1, k));
+    printMatrixColMajLimited(tmp_debug1, k, d1, 5, 5);
+    printf("\nP_%d associated matrix\n", p_i);
+    DATA_TYPE* tmp_debug = new DATA_TYPE[d1d1];
+    CHECK_CUBLAS_ERROR(cublasGetMatrix(d1, d1, sizeof(DATA_TYPE), P, d1, tmp_debug, d1));
+    printMatrixColMajLimited(tmp_debug, d1, d1, 5, 5);
+    delete[] tmp_debug;
+    delete[] tmp_debug1;
+    printf("\n");
+#endif
+
 
     // c * P
     // P is symmetric
@@ -187,54 +212,63 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
                                     &alpha,
                                     P, d1,
                                     d_C, k,
-                                    &beta, d_tmp, k));
+                                    &beta, d_tmp , k));
 
-    #if DEBUG_GEMM
-      printf("\nc * P\n");
-      DATA_TYPE* tmp_debug2 = new DATA_TYPE[k * d1];
-      CHECK_CUBLAS_ERROR(cublasGetMatrix(k, d1, sizeof(DATA_TYPE), d_tmp, k, tmp_debug2, k));
-      printMatrixColMajLimited(tmp_debug2, k, d1, 5, 5);
-      delete[] tmp_debug2;
-      printf("\n");
-    #endif
+#if DEBUG_GEMM
+    printf("\nc * P\n");
+    DATA_TYPE* tmp_debug2 = new DATA_TYPE[k * d1];
+    CHECK_CUBLAS_ERROR(cublasGetMatrix(k, d1, sizeof(DATA_TYPE), d_tmp, k, tmp_debug2, k));
+    printMatrixColMajLimited(tmp_debug2, k, d1, 5, 5);
+    delete[] tmp_debug2;
+    printf("\n");
+#endif
 
+    int offset = p_i * k * k ;
+    
     CHECK_CUBLAS_ERROR(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, // (c * P) * c^T
                                     k, k, d1, &alpha,
                                     d_tmp, k,
                                     d_C, k,
-                                    &beta, d_tmp, k));
-
-    int num_blocks = 0;
-    int num_threads = 0;
-    schedule_copy_diag(deviceProps, k, &num_blocks, &num_threads);
-
-    // Copy distances to GPU
-    copy_diag<<<num_blocks, num_threads>>>(d_tmp, d_distances, k, p_i*k);
+                                    &beta, d_tmp_arr + offset, k));
 
 
-    #if DEBUG_GEMM
-      CHECK_CUBLAS_ERROR(cublasGetMatrix(k,k,sizeof(DATA_TYPE), d_tmp, k, h_tmp, k));
-      printf("Distances from P_%d\n", p_i);
-      printMatrixColMajLimited(h_tmp, k, k, 5, 5);
-      printf("\n----------\n");
-    #endif
+
+#if DEBUG_GEMM
+    CHECK_CUBLAS_ERROR(cublasGetMatrix(k,k,sizeof(DATA_TYPE), d_tmp_arr + offset, k, h_tmp, k));
+    printf("Distances from P_%d\n", p_i);
+    printMatrixColMajLimited(h_tmp, k, k, 5, 5);
+    printf("\n----------\n");
+#endif
+
   }
+  int num_blocks = 0;
+  int num_threads = 0;
+  schedule_copy_diag(deviceProps, k*n, &num_blocks, &num_threads);
+
+  // Copy distances to GPU
+  copy_diag<<<num_blocks, num_threads>>>(d_tmp_arr, d_distances, k, n);
   CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+  CHECK_CUDA_ERROR(cudaFree(d_tmp_arr));
+#endif
 }
 
 
-void schedule_copy_diag(cudaDeviceProp * props, const int k, int * num_blocks, int * num_threads) {
-  *num_threads = (k < props->maxThreadsPerBlock) ? k : props->maxThreadsPerBlock;
-  *num_blocks = ceil(static_cast<float>(k) / static_cast<float>(*num_threads));  
+void schedule_copy_diag(cudaDeviceProp * props, const int kn, int * num_blocks, int * num_threads) {
+  *num_threads = (kn < props->maxThreadsPerBlock) ? kn : props->maxThreadsPerBlock;
+  *num_blocks = ceil(static_cast<float>(kn) / static_cast<float>(*num_threads));  
 }
 
 
-__global__ void copy_diag(const DATA_TYPE * d_tmp, DATA_TYPE * d_distances, const int k, const int offset) {
+__global__ void copy_diag(const DATA_TYPE * d_tmp_arr, DATA_TYPE * d_distances, const int k, const int n) {
   
-  int idx = threadIdx.x + blockIdx.x * blockDim.x;
+  const int idx = threadIdx.x + blockIdx.x * blockDim.x;
+  
+  const int matrix_base = idx / k;
 
-  if (idx<k) {
-    d_distances[offset + idx] = d_tmp[idx*k+idx];
+  const int diag_idx = idx % k;
+
+  if (idx<(k*n)) {
+    d_distances[idx] = d_tmp_arr[matrix_base*k*k + diag_idx + diag_idx*k];
   }
 
 }
