@@ -7,7 +7,7 @@
 #include "../kmeans.cuh"
 
 //#define DEBUG_GEMM 1
-//#define BATCHED_GEMM
+#define BATCHED_GEMM
 
 /*** Warp oriented ***/
 
@@ -171,20 +171,85 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
   CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_tmp_arr), sizeof(DATA_TYPE) * n * k * k));
 
 #ifdef BATCHED_GEMM
-  // Replicate c n times
+  // Store n pointers to c
+  const DATA_TYPE * h_C_arr[n];
+  DATA_TYPE ** d_C_arr;
   
-  DATA_TYPE * d_C_arr;
-  CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_C_arr), sizeof(DATA_TYPE) * d1 * k * n));
-  CHECK_CUDA_ERROR(cudaMemcpy2D(d_C_arr, sizeof(DATA_TYPE) * d1 * n, 
-                                d_C, d1, 
-                                sizeof(DATA_TYPE)*d1, sizeof(DATA_TYPE)*k, 
-                                cudaMemcpyDeviceToDevice));
+  //TODO: Replace this with cudamemset?
+  for ( uint32_t i=0; i<n; i++) {
+    h_C_arr[i] = d_C;
+  }
+
+  CHECK_CUDA_ERROR(cudaMalloc(&d_C_arr, sizeof(DATA_TYPE *) * n));
+  CHECK_CUDA_ERROR(cudaMemcpy(d_C_arr, h_C_arr, sizeof(DATA_TYPE * ) * n, cudaMemcpyHostToDevice));
+
+
+  // Store pointers to each point matrix
+  const DATA_TYPE * h_P_arr[n];
+  DATA_TYPE ** d_P_arr;
+  
+  for ( uint32_t i=0; i<n; i++) {
+    h_P_arr[i] = P + (i*d1d1);
+  }
+
+  CHECK_CUDA_ERROR(cudaMalloc(&d_P_arr, sizeof(DATA_TYPE * ) * n));
+  CHECK_CUDA_ERROR(cudaMemcpy(d_P_arr, h_P_arr, sizeof(DATA_TYPE *) * n, cudaMemcpyHostToDevice));
+  
+
+  // Temporary storage for c*P
+  DATA_TYPE * d_tmp_arr2;
+  CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_tmp_arr2), sizeof(DATA_TYPE) * n * k * d1));
+
+  
+  // Store pointers to the temporary c*P matrices
+  DATA_TYPE * h_tmp_arr2_ptrs[n];
+  DATA_TYPE ** d_tmp_arr2_ptrs;
+
+  for ( uint32_t i=0; i<n; i++) {
+    h_tmp_arr2_ptrs[i] = d_tmp_arr2 + (i*k*d1);
+  }
+
+  CHECK_CUDA_ERROR(cudaMalloc(&d_tmp_arr2_ptrs, sizeof(DATA_TYPE *) * n));
+  CHECK_CUDA_ERROR(cudaMemcpy(d_tmp_arr2_ptrs, h_tmp_arr2_ptrs, sizeof(DATA_TYPE *) * n, cudaMemcpyHostToDevice));
+
 
   CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle,
                                         CUBLAS_OP_N, CUBLAS_OP_N,
                                         k, d1, d1,
                                         &alpha,
+                                        d_C_arr, k,
+                                        d_P_arr, d1,
+                                        &beta,
+                                        d_tmp_arr2_ptrs, k,
+                                        n));
 
+  // Store pointers to d_tmp_arr
+  DATA_TYPE * h_tmp_arr_ptrs[n];
+  DATA_TYPE ** d_tmp_arr_ptrs;
+  
+  for ( uint32_t i=0; i<n; i++) {
+    h_tmp_arr_ptrs[i] = d_tmp_arr + (i*k*k);
+  }
+
+  CHECK_CUDA_ERROR(cudaMalloc(&d_tmp_arr_ptrs, sizeof(DATA_TYPE *) * n));
+  CHECK_CUDA_ERROR(cudaMemcpy(d_tmp_arr_ptrs, h_tmp_arr_ptrs, sizeof(DATA_TYPE *) * n, cudaMemcpyHostToDevice));
+
+  CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle,
+                                        CUBLAS_OP_N, CUBLAS_OP_T,
+                                        k, k, d1,
+                                        &alpha,
+                                        d_tmp_arr2_ptrs, k,
+                                        d_C_arr, k,
+                                        &beta,
+                                        d_tmp_arr_ptrs, k,
+                                        n));
+
+  CHECK_CUDA_ERROR(cudaFree(d_tmp_arr_ptrs));
+  CHECK_CUDA_ERROR(cudaFree(d_tmp_arr2_ptrs));
+  CHECK_CUDA_ERROR(cudaFree(d_C_arr));
+  CHECK_CUDA_ERROR(cudaFree(d_P_arr));
+
+  CHECK_CUDA_ERROR(cudaFree(d_tmp_arr2));
 
 #else
 
@@ -241,6 +306,7 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
 #endif
 
   }
+#endif
   int num_blocks = 0;
   int num_threads = 0;
   schedule_copy_diag(deviceProps, k*n, &num_blocks, &num_threads);
@@ -249,7 +315,6 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
   copy_diag<<<num_blocks, num_threads>>>(d_tmp_arr, d_distances, k, n);
   CHECK_CUDA_ERROR(cudaDeviceSynchronize());
   CHECK_CUDA_ERROR(cudaFree(d_tmp_arr));
-#endif
 }
 
 
