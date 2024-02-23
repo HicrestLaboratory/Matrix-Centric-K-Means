@@ -150,11 +150,11 @@ uint32_t last_nk = 0;
  */
 void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProps, 
                               const uint32_t d1, const uint32_t n, const uint32_t k, 
-                              const DATA_TYPE* d_P, const DATA_TYPE* d_C, DATA_TYPE* d_distances) {
+                              DATA_TYPE* d_P, const DATA_TYPE* d_C, DATA_TYPE* d_distances) {
   DATA_TYPE alpha = (DATA_TYPE)1;
   DATA_TYPE beta = (DATA_TYPE)0;
   uint32_t d1d1 = d1 * d1;
-  const DATA_TYPE* P = d_P;
+  DATA_TYPE* P = d_P;
   uint32_t max_k_d1 = max(k, d1);
   if (last_nk <= 0 || (n * k) > last_nk) {
     if (h_distances != NULL) delete[] h_distances;
@@ -175,8 +175,9 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
   const DATA_TYPE * h_C_arr[n];
   DATA_TYPE ** d_C_arr;
   
-  //TODO: Replace this with cudamemset?
-  for ( uint32_t i=0; i<n; i++) {
+#pragma omp parallel for
+  for ( uint32_t i=0; i<n; i++) 
+  {
     h_C_arr[i] = d_C;
   }
 
@@ -185,10 +186,12 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
 
 
   // Store pointers to each point matrix
-  const DATA_TYPE * h_P_arr[n];
+  DATA_TYPE * h_P_arr[n];
   DATA_TYPE ** d_P_arr;
   
-  for ( uint32_t i=0; i<n; i++) {
+#pragma omp parallel for
+  for ( uint32_t i=0; i<n; i++) 
+  {
     h_P_arr[i] = P + (i*d1d1);
   }
 
@@ -205,7 +208,9 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
   DATA_TYPE * h_tmp_arr2_ptrs[n];
   DATA_TYPE ** d_tmp_arr2_ptrs;
 
-  for ( uint32_t i=0; i<n; i++) {
+#pragma omp parallel for
+  for ( uint32_t i=0; i<n; i++) 
+  {
     h_tmp_arr2_ptrs[i] = d_tmp_arr2 + (i*k*d1);
   }
 
@@ -225,14 +230,16 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
                                         n));
 
   // Store pointers to d_tmp_arr
-  DATA_TYPE * h_tmp_arr_ptrs[n];
-  DATA_TYPE ** d_tmp_arr_ptrs;
+  // Reuse points matrices pointers buffer
+  DATA_TYPE ** h_tmp_arr_ptrs  = h_P_arr;
+  DATA_TYPE ** d_tmp_arr_ptrs = d_P_arr;
   
-  for ( uint32_t i=0; i<n; i++) {
+#pragma omp parallel for
+  for ( uint32_t i=0; i<n; i++) 
+  {
     h_tmp_arr_ptrs[i] = d_tmp_arr + (i*k*k);
   }
 
-  CHECK_CUDA_ERROR(cudaMalloc(&d_tmp_arr_ptrs, sizeof(DATA_TYPE *) * n));
   CHECK_CUDA_ERROR(cudaMemcpyAsync(d_tmp_arr_ptrs, h_tmp_arr_ptrs, sizeof(DATA_TYPE *) * n, cudaMemcpyHostToDevice));
 
   CHECK_CUDA_ERROR(cudaDeviceSynchronize());
@@ -250,7 +257,6 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
   CHECK_CUDA_ERROR(cudaFree(d_tmp_arr_ptrs));
   CHECK_CUDA_ERROR(cudaFree(d_tmp_arr2_ptrs));
   CHECK_CUDA_ERROR(cudaFree(d_C_arr));
-  CHECK_CUDA_ERROR(cudaFree(d_P_arr));
 
   CHECK_CUDA_ERROR(cudaFree(d_tmp_arr2));
 
