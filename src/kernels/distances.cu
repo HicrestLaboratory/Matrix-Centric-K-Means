@@ -150,7 +150,7 @@ uint32_t last_nk = 0;
  */
 void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProps, 
                               const uint32_t d1, const uint32_t n, const uint32_t k, 
-                              DATA_TYPE* d_P, const DATA_TYPE* d_C, DATA_TYPE* d_distances) {
+                              DATA_TYPE* d_P, DATA_TYPE* d_C, DATA_TYPE* d_distances) {
   DATA_TYPE alpha = (DATA_TYPE)1;
   DATA_TYPE beta = (DATA_TYPE)0;
   uint32_t d1d1 = d1 * d1;
@@ -171,51 +171,42 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
   CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_tmp_arr), sizeof(DATA_TYPE) * n * k * k));
 
 #ifdef BATCHED_GEMM
+
+  DATA_TYPE * h_ptrs_arr[n*4];
+  DATA_TYPE ** d_ptrs_arr;
+  CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_ptrs_arr), sizeof(DATA_TYPE *) * n * 4));
+
   // Store n pointers to c
-  const DATA_TYPE * h_C_arr[n];
-  DATA_TYPE ** d_C_arr;
+  DATA_TYPE ** h_C_arr = h_ptrs_arr;
+  DATA_TYPE ** d_C_arr = d_ptrs_arr;
   
-#pragma omp parallel for
-  for ( uint32_t i=0; i<n; i++) 
-  {
-    h_C_arr[i] = d_C;
-  }
-
-  CHECK_CUDA_ERROR(cudaMalloc(&d_C_arr, sizeof(DATA_TYPE *) * n));
-  CHECK_CUDA_ERROR(cudaMemcpyAsync(d_C_arr, h_C_arr, sizeof(DATA_TYPE * ) * n, cudaMemcpyHostToDevice));
-
-
   // Store pointers to each point matrix
-  DATA_TYPE * h_P_arr[n];
-  DATA_TYPE ** d_P_arr;
-  
-#pragma omp parallel for
-  for ( uint32_t i=0; i<n; i++) 
-  {
-    h_P_arr[i] = P + (i*d1d1);
-  }
+  DATA_TYPE ** h_P_arr = h_ptrs_arr + n;
+  DATA_TYPE ** d_P_arr = d_ptrs_arr + n;
 
-  CHECK_CUDA_ERROR(cudaMalloc(&d_P_arr, sizeof(DATA_TYPE * ) * n));
-  CHECK_CUDA_ERROR(cudaMemcpyAsync(d_P_arr, h_P_arr, sizeof(DATA_TYPE *) * n, cudaMemcpyHostToDevice));
-  
+  // Store pointers to the temporary c*P matrices
+  DATA_TYPE ** h_tmp_arr2_ptrs = h_ptrs_arr + (2*n);
+  DATA_TYPE ** d_tmp_arr2_ptrs = d_ptrs_arr + (2*n);
+
+  // Store pointers to d_tmp_arr
+  DATA_TYPE ** h_tmp_arr_ptrs  = h_ptrs_arr + (3*n);
+  DATA_TYPE ** d_tmp_arr_ptrs = d_ptrs_arr + 3*n;
 
   // Temporary storage for c*P
   DATA_TYPE * d_tmp_arr2;
   CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_tmp_arr2), sizeof(DATA_TYPE) * n * k * d1));
 
-  
-  // Store pointers to the temporary c*P matrices
-  DATA_TYPE * h_tmp_arr2_ptrs[n];
-  DATA_TYPE ** d_tmp_arr2_ptrs;
-
 #pragma omp parallel for
   for ( uint32_t i=0; i<n; i++) 
   {
+    h_C_arr[i] = d_C;
+    h_P_arr[i] = P + (i*d1d1);
     h_tmp_arr2_ptrs[i] = d_tmp_arr2 + (i*k*d1);
+    h_tmp_arr_ptrs[i] = d_tmp_arr + (i*k*k);
   }
 
-  CHECK_CUDA_ERROR(cudaMalloc(&d_tmp_arr2_ptrs, sizeof(DATA_TYPE *) * n));
-  CHECK_CUDA_ERROR(cudaMemcpyAsync(d_tmp_arr2_ptrs, h_tmp_arr2_ptrs, sizeof(DATA_TYPE *) * n, cudaMemcpyHostToDevice));
+  // Copy all host pointers to device
+  CHECK_CUDA_ERROR(cudaMemcpyAsync(d_ptrs_arr, h_ptrs_arr, sizeof(DATA_TYPE *) * n * 4, cudaMemcpyHostToDevice));
 
   CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
@@ -229,20 +220,6 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
                                         d_tmp_arr2_ptrs, k,
                                         n));
 
-  // Store pointers to d_tmp_arr
-  // Reuse points matrices pointers buffer
-  DATA_TYPE ** h_tmp_arr_ptrs  = h_P_arr;
-  DATA_TYPE ** d_tmp_arr_ptrs = d_P_arr;
-  
-#pragma omp parallel for
-  for ( uint32_t i=0; i<n; i++) 
-  {
-    h_tmp_arr_ptrs[i] = d_tmp_arr + (i*k*k);
-  }
-
-  CHECK_CUDA_ERROR(cudaMemcpyAsync(d_tmp_arr_ptrs, h_tmp_arr_ptrs, sizeof(DATA_TYPE *) * n, cudaMemcpyHostToDevice));
-
-  CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
   CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle,
                                         CUBLAS_OP_N, CUBLAS_OP_T,
@@ -254,10 +231,7 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
                                         d_tmp_arr_ptrs, k,
                                         n));
 
-  CHECK_CUDA_ERROR(cudaFree(d_tmp_arr_ptrs));
-  CHECK_CUDA_ERROR(cudaFree(d_tmp_arr2_ptrs));
-  CHECK_CUDA_ERROR(cudaFree(d_C_arr));
-
+  CHECK_CUDA_ERROR(cudaFree(d_ptrs_arr));
   CHECK_CUDA_ERROR(cudaFree(d_tmp_arr2));
 
 #else

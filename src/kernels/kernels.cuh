@@ -38,7 +38,7 @@ __global__ void compute_distances_shfl(DATA_TYPE* distances, const DATA_TYPE* ce
 __global__ void compute_point_associated_matrices (const DATA_TYPE* points, DATA_TYPE* associated_matrices, const uint32_t d, const uint32_t round);
 void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp *deviceProps, 
     const uint32_t d1, const uint32_t n, const uint32_t k, 
-    const DATA_TYPE* d_P, const DATA_TYPE* d_C, DATA_TYPE* d_distances);
+     DATA_TYPE* d_P,  DATA_TYPE* d_C, DATA_TYPE* d_distances);
 __global__ void copy_diag(const DATA_TYPE * d_tmp, DATA_TYPE * d_distances, const int k, const int offset);
 void compute_gemm_distances_free ();
 
