@@ -181,7 +181,7 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
   }
 
   CHECK_CUDA_ERROR(cudaMalloc(&d_C_arr, sizeof(DATA_TYPE *) * n));
-  CHECK_CUDA_ERROR(cudaMemcpy(d_C_arr, h_C_arr, sizeof(DATA_TYPE * ) * n, cudaMemcpyHostToDevice));
+  CHECK_CUDA_ERROR(cudaMemcpyAsync(d_C_arr, h_C_arr, sizeof(DATA_TYPE * ) * n, cudaMemcpyHostToDevice));
 
 
   // Store pointers to each point matrix
@@ -193,7 +193,7 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
   }
 
   CHECK_CUDA_ERROR(cudaMalloc(&d_P_arr, sizeof(DATA_TYPE * ) * n));
-  CHECK_CUDA_ERROR(cudaMemcpy(d_P_arr, h_P_arr, sizeof(DATA_TYPE *) * n, cudaMemcpyHostToDevice));
+  CHECK_CUDA_ERROR(cudaMemcpyAsync(d_P_arr, h_P_arr, sizeof(DATA_TYPE *) * n, cudaMemcpyHostToDevice));
   
 
   // Temporary storage for c*P
@@ -210,8 +210,9 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
   }
 
   CHECK_CUDA_ERROR(cudaMalloc(&d_tmp_arr2_ptrs, sizeof(DATA_TYPE *) * n));
-  CHECK_CUDA_ERROR(cudaMemcpy(d_tmp_arr2_ptrs, h_tmp_arr2_ptrs, sizeof(DATA_TYPE *) * n, cudaMemcpyHostToDevice));
+  CHECK_CUDA_ERROR(cudaMemcpyAsync(d_tmp_arr2_ptrs, h_tmp_arr2_ptrs, sizeof(DATA_TYPE *) * n, cudaMemcpyHostToDevice));
 
+  CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
   CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle,
                                         CUBLAS_OP_N, CUBLAS_OP_N,
@@ -232,7 +233,9 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
   }
 
   CHECK_CUDA_ERROR(cudaMalloc(&d_tmp_arr_ptrs, sizeof(DATA_TYPE *) * n));
-  CHECK_CUDA_ERROR(cudaMemcpy(d_tmp_arr_ptrs, h_tmp_arr_ptrs, sizeof(DATA_TYPE *) * n, cudaMemcpyHostToDevice));
+  CHECK_CUDA_ERROR(cudaMemcpyAsync(d_tmp_arr_ptrs, h_tmp_arr_ptrs, sizeof(DATA_TYPE *) * n, cudaMemcpyHostToDevice));
+
+  CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
   CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle,
                                         CUBLAS_OP_N, CUBLAS_OP_T,
