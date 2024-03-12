@@ -5,13 +5,36 @@
 #include "include/common.h"
 #include "include/point.hpp"
 
+#ifdef NVTX
+#include "nvToolsExt.h"
+#endif
+
+const uint32_t colors[] = { 0xff00ff00, 0xff0000ff, 0xffffff00, 0xffff00ff, 0xff00ffff, 0xffff0000, 0xffffffff };
+const int num_colors = sizeof(colors)/sizeof(uint32_t);
+
+#ifdef NVTX
+#define PUSH_RANGE(name,cid) { \
+        int color_id = cid; \
+        color_id = color_id%num_colors;\
+        nvtxEventAttributes_t eventAttrib = {0}; \
+        eventAttrib.version = NVTX_VERSION; \
+        eventAttrib.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE; \
+        eventAttrib.colorType = NVTX_COLOR_ARGB; \
+        eventAttrib.color = colors[color_id]; \
+        eventAttrib.messageType = NVTX_MESSAGE_TYPE_ASCII; \
+        eventAttrib.message.ascii = name; \
+        nvtxRangePushEx(&eventAttrib); \
+}
+#define POP_RANGE nvtxRangePop();
+#endif
+
 /**
  * @brief
  * 0: compute_distances_one_point_per_warp
  * 1: compute_distances_shfl
  * 2: matrix multiplication
  */
-#define COMPUTE_DISTANCES_KERNEL 1
+#define COMPUTE_DISTANCES_KERNEL 2
 
 class Kmeans {
   private:
