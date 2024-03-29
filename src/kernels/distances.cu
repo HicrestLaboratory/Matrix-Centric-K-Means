@@ -7,7 +7,8 @@
 #include "../kmeans.cuh"
 
 //#define DEBUG_GEMM 1
-#define BATCHED_GEMM
+//#define BATCHED_GEMM
+#define CUGRAPH
 
 /*** Warp oriented ***/
 
@@ -210,6 +211,11 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
 
   CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
+#ifdef NVTX
+  PUSH_RANGE(__func__, 1)
+  PUSH_RANGE("GEMM-1", 2);
+#endif
+
   CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle,
                                         CUBLAS_OP_N, CUBLAS_OP_N,
                                         k, d1, d1,
@@ -219,7 +225,10 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
                                         &beta,
                                         d_tmp_arr2_ptrs, k,
                                         n));
-
+#ifdef NVTX
+  POP_RANGE;
+  PUSH_RANGE("GEMM-2", 2);
+#endif
 
   CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle,
                                         CUBLAS_OP_N, CUBLAS_OP_T,
@@ -230,6 +239,11 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
                                         &beta,
                                         d_tmp_arr_ptrs, k,
                                         n));
+
+#ifdef NVTX
+  POP_RANGE;
+  POP_RANGE;
+#endif
 
   CHECK_CUDA_ERROR(cudaFree(d_ptrs_arr));
   CHECK_CUDA_ERROR(cudaFree(d_tmp_arr2));

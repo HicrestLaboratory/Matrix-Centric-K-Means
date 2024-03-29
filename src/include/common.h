@@ -20,4 +20,6 @@
 
 #define DATA_TYPE float
 
+//#define NVTX
+
 #endif
