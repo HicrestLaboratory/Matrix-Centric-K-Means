@@ -59,6 +59,8 @@ TEST_CASE("kernel_distances_matrix", "[kernel][distances]") { // FIXME does not 
   const unsigned int D[TESTS_N] = { 1,  2,  3, 11, 42, 1500,  400,   200};
   const unsigned int K[TESTS_N] = { 2,  6,  3, 11, 20,    5,   10,   200};
 
+  getDeviceProps(0, &deviceProps);
+
   for (int test_i = 0; test_i < TESTS_N - 1; ++test_i) {
     const unsigned int n = N[test_i];
     const unsigned int d = D[test_i];
@@ -122,7 +124,7 @@ TEST_CASE("kernel_distances_matrix", "[kernel][distances]") { // FIXME does not 
       // Test function compute_gemm_distances
       cublasHandle_t cublasHandle;
       cublasCreate(&cublasHandle);
-      compute_gemm_distances(cublasHandle, d1, n, k, d_P, d_C, d_distances);
+      compute_gemm_distances(cublasHandle,&deviceProps, d1, n, k, d_P, d_C, d_distances);
       cudaMemcpy(h_distances, d_distances, n * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
 
       for (uint32_t ni = 0; ni < n; ++ni) {
