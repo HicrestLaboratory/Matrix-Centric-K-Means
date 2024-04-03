@@ -8,7 +8,6 @@
 
 //#define DEBUG_GEMM 1
 //#define BATCHED_GEMM
-#define CUGRAPH
 
 /*** Warp oriented ***/
 
@@ -344,5 +343,78 @@ void compute_gemm_distances_free () {
   h_distances = NULL;
   h_tmp = NULL;
 }
+
+
+/* Compute euclidean distances using 2 spgemms. The sparse matrices are stored in BCRS format */
+void compute_spgemm_distances(cublasHandle_t& handle, cudaDeviceProp * deviceProps, 
+                              const uint32_t d1, const uint32_t n, const uint32_t k, 
+                              DATA_TYPE* d_P, DATA_TYPE* d_C, DATA_TYPE* d_distances)
+{
+    // Create P and C in CSR format
+    // I would like to use BCSR format but only square blocks are currently supported...
+
+    // P -> (n*d1) x (n*d1), d1*d1*n nnz (sort of)
+    // C -> (n*k) x (n*d1), d1*k*n nnz
+    cusparseSpMatDescr_t descr_P;     
+    cusparseSpMatDescr_t descr_C;     
+    
+    DATA_TYPE * d_vals_P = d_P;
+    int32_t * d_rowinds_P;
+    int32_t * d_col_offsets_P;
+
+    int32_t * h_rowinds_P = new int32_t[d1*d1*n];
+    int32_t * h_col_offsets_P = new int32_t[(n*d1)+1];
+
+    DATA_TYPE * d_vals_C;
+    int32_t * d_rowinds_C;
+    int32_t * d_col_offsets_C;
+
+    int32_t * h_rowinds_C = new int32_t[d1*k*n];
+    int32_t * h_col_offsets_C = new int32_t[(n*d1)+1];
+
+#pragma omp parallel for
+    for (int i=0; i<n*d1*d1; i++)
+    {
+        h_rowinds_P[i] = (i % d1) + (d1 * (i / (d1*d1)));
+    }
+
+#pragma omp parallel for
+    for (int i=0; i<n*d1+1; i++) 
+    {
+        h_col_offsets_P[i] = i*d1;
+        h_col_offsets_C[i] = i*k;
+    }
+    
+#pragma omp parallel for
+    for (int i=0; i<d1*k*n; i++)
+    {
+        h_rowinds_C[i] = (i % k) + (k * (i / (d1*k)));
+    }
+
+    CHECK_CUDA_ERROR(cudaMalloc((void**)(&d_rowinds_P), sizeof(int32_t)*n*d1*d1));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)(&d_col_offsets_P), sizeof(int32_t)*(n*d1+1) ));
+
+    CHECK_CUDA_ERROR(cudaMalloc((void**)(&d_vals_C), sizeof(DATA_TYPE)*n*d1*k));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)(&d_rowinds_C), sizeof(int32_t)*n*d1*k));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)(&d_col_offsets_C), sizeof(int32_t)*(n*d1+1)));
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_rowinds_P, h_rowinds_P, sizeof(int32_t)*n*d1*d1, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_col_offsets_P, h_col_offsets_P, sizeof(int32_t)*(n*d1+1), cudaMemcpyHostToDevice));
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_rowinds_C, h_rowinds_C, sizeof(int32_t)*d1*k*n, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_col_offsets_C, h_col_offsets_C, sizeof(int32_t)*(d1*n+1), cudaMemcpyHostToDevice));
+
+    for (int i=0; i<n; i++) {
+        CHECK_CUDA_ERROR(cudaMemcpy(d_vals_C+(i*sizeof(DATA_TYPE)), 
+                        d_C, sizeof(DATA_TYPE)*(d1*k), cudaMemcpyDeviceToDevice));
+    }
+
+
+}
+
+
+
+
+
 
 /*** END Matrix multiplication ***/
