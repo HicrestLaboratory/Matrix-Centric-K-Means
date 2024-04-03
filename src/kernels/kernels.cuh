@@ -42,6 +42,10 @@ __global__ void compute_p_matrix(const DATA_TYPE * d_points, DATA_TYPE * d_P,
                                             const uint32_t d, const uint32_t n, const uint32_t k,
                                             const uint32_t rounds);
 
+__global__ void compute_c_matrix(const DATA_TYPE * d_centroids, DATA_TYPE * d_C,
+                                            const uint32_t d, const uint32_t n, const uint32_t k,
+                                            const uint32_t rounds);
+
 void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp *deviceProps, 
     const uint32_t d1, const uint32_t n, const uint32_t k, 
      DATA_TYPE* d_P,  DATA_TYPE* d_C, DATA_TYPE* d_distances);
@@ -58,5 +62,6 @@ __global__ void clusters_argmin_shfl(const uint32_t n, const uint32_t k, DATA_TY
 __global__ void compute_centroids_shfl(DATA_TYPE* centroids, const DATA_TYPE* points, const uint32_t* points_clusters, const uint32_t* clusters_len, const uint64_t n, const uint32_t d, const uint32_t k, const uint32_t round);
 
 void check_p_correctness(DATA_TYPE * P, DATA_TYPE * points, uint32_t n, uint32_t d);
+void check_c_correctness(DATA_TYPE * C, DATA_TYPE * centroids, uint32_t k, uint32_t d);
 
 #endif

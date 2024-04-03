@@ -10,6 +10,7 @@ using namespace std;
 #define IDX2C(i,j,ld) (((j)*(ld))+(i))
 
 #define CHECK_CUBLAS_ERROR(val)   checkCUBLAS((val), #val, __FILE__, __LINE__)
+#define CHECK_CUSPARSE_ERROR(val)   checkSPARSE((val), #val, __FILE__, __LINE__)
 #define CHECK_CUDA_ERROR(val)   check((val), #val, __FILE__, __LINE__)
 #define CHECK_LAST_CUDA_ERROR() checkLast(__FILE__, __LINE__)
 
@@ -26,6 +27,7 @@ void printMatrixRowMajLimited (DATA_TYPE* M, uint32_t rows, uint32_t cols, uint3
 void printMatrixColMaj (DATA_TYPE* M, uint32_t rows, uint32_t cols);
 void printMatrixRowMaj (DATA_TYPE* M, uint32_t rows, uint32_t cols);
 void printArray (DATA_TYPE* A, uint32_t len);
+bool is_close(DATA_TYPE val, DATA_TYPE actual, DATA_TYPE atol=1e-4);
 
 #endif
 

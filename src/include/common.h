@@ -1,6 +1,8 @@
 #ifndef __COMMON__
 #define __COMMON__
 
+#include <cassert>
+
 #define DEBUG_DEVICE 0
 
 #define DEBUG_INPUT_DATA 0

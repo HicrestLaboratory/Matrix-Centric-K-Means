@@ -162,9 +162,21 @@ __global__ void compute_p_matrix(const DATA_TYPE * d_points, DATA_TYPE * d_P,
 
 
 __global__ void compute_c_matrix(const DATA_TYPE * d_centroids, DATA_TYPE * d_C, 
-                                    const uint32_t d, const uint32_t n, const uint32_t k)
+                                    const uint32_t d, const uint32_t n, const uint32_t k,
+                                    const uint32_t rounds)
 {
+    uint32_t centroid_base_idx = blockIdx.x * d;
+    for (int round=0; round<rounds; round++) {
+        uint32_t centroid_idx = (round * blockDim.x + threadIdx.x);
+        if (centroid_idx < d) {
+            DATA_TYPE centroid = d_centroids[centroid_base_idx + centroid_idx];
+            uint32_t c_idx = blockIdx.x * (3*d) + centroid_idx * 3;
 
+            d_C[c_idx] = (DATA_TYPE)1;
+            d_C[c_idx + 1] = centroid;
+            d_C[c_idx + 2] = centroid*centroid;       
+        }
+    }
 }
 
 
@@ -384,7 +396,7 @@ void compute_gemm_distances_free () {
 void check_p_correctness(DATA_TYPE * P, DATA_TYPE * points, uint32_t n, uint32_t d) 
 {
     for (uint32_t i=0; i<n; i++) {
-        for (uint32_t j=0; j<d; j+=3) {
+        for (uint32_t j=0; j<3*d; j+=3) {
             DATA_TYPE val = points[i*d + (j/3)];
             uint32_t base_idx = i + n*j;
             if( is_close(P[base_idx], val*val) && is_close(P[base_idx + n], -2*val) 
@@ -401,6 +413,32 @@ void check_p_correctness(DATA_TYPE * P, DATA_TYPE * points, uint32_t n, uint32_t
         }
     }
     cout<<"P correctness passed!"<<endl;
+}
+
+
+void check_c_correctness(DATA_TYPE * C, DATA_TYPE * centroids, uint32_t k, uint32_t d) 
+{
+    for (uint32_t j=0; j<k; j++) {
+        for (uint32_t i=0; i<3*d; i+=3) {
+            DATA_TYPE val = centroids[(i/3) + j*d];
+            
+            uint32_t base_idx = j*3*d + i;
+
+            if (is_close(C[base_idx], 1) && 
+                is_close(C[base_idx + 1], val) &&
+                is_close(C[base_idx + 2], val*val)) {
+                continue;
+            } else {
+                cout<<"C correctness failed ... "<<endl
+                    <<"Val: "<<val<<endl
+                    <<"(i: "<<i<<", j: "<<j<<")"<<endl
+                    <<"("<<C[base_idx]<<","<<C[base_idx+1]<<","<<C[base_idx+2]<<")"<<endl;
+                exit(1);
+            }
+
+        }
+    }
+    cout<<"C correctness passed!"<<endl;
 }
 
 

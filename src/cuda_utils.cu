@@ -154,3 +154,11 @@ void printArray (DATA_TYPE* A, uint32_t len) {
     printf("%10.3f ", A[i]);
   }
 }
+
+
+bool is_close(DATA_TYPE val, DATA_TYPE actual, DATA_TYPE atol) {
+        return fabs(val - actual) <= atol;
+}
+
+
+
