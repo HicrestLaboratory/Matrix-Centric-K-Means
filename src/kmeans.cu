@@ -194,22 +194,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
     compute_p_matrix<<<p_mat_grid_dim, p_mat_block_dim>>>(d_points, d_P, d, n, k, p_rounds);
 
-    //Debug
-    //DATA_TYPE * h_points_debug = new DATA_TYPE[n*d];
-    //CHECK_CUDA_ERROR(cudaMemcpy(h_points_debug, d_points, sizeof(DATA_TYPE)*n*d, cudaMemcpyDeviceToHost));
-    //cout<<"Points matrix"<<endl;
-    //printMatrixRowMaj(h_points_debug, n, d);
-
-    //DATA_TYPE * h_P_debug = new DATA_TYPE[p_size];
-    //CHECK_CUDA_ERROR(cudaMemcpy(h_P_debug, d_P, sizeof(DATA_TYPE)*p_size, cudaMemcpyDeviceToHost));
-    //cout<<"Computed P matrix"<<endl;
-    //printMatrixColMaj(h_P_debug, p_rows, p_cols);
-
-    //check_p_correctness(h_P_debug, h_points_debug, n, d);
-    
-    //delete[] h_P_debug;
-    //delete[] h_points_debug;
-
     // Malloc C here, but don't initialize it yet because we need to do that once per iteration
     CHECK_CUDA_ERROR(cudaMalloc(&d_C, sizeof(DATA_TYPE)*c_rows*c_cols));
 
@@ -279,18 +263,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         uint32_t c_mat_block_dim = min((size_t)deviceProps->maxThreadsPerBlock, c_rows/3);
         uint32_t c_rounds = ceil((float)(c_rows/3) / (float)c_mat_block_dim);
         compute_c_matrix<<<c_mat_grid_dim, c_mat_block_dim>>>(d_centroids, d_C, d, n, k, c_rounds); 
-
-        //cout<<"Centroids"<<endl;
-        //printMatrixRowMaj(h_centroids, k, d);
-
-        //DATA_TYPE * h_C_debug = new DATA_TYPE[k*d];
-        //CHECK_CUDA_ERROR(cudaMemcpy(h_C_debug, d_C, sizeof(DATA_TYPE)*c_size, cudaMemcpyDeviceToHost));
-        //cout<<"C matrix"<<endl;
-        //printMatrixColMaj(h_C_debug, c_rows, c_cols);
-
-        //check_c_correctness(h_C_debug, h_centroids, k, d);
-
-        //delete[] h_C_debug;
 
         compute_gemm_distances_fast(cublasHandle,
                                     d, n, k,
@@ -384,11 +356,23 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 		if (DEBUG_KERNELS_INVOKATION) printf(YELLOW "[KERNEL]" RESET " %-25s: Grid (%4u, %4u, %4u), Block (%4u, %4u, %4u), Sh.mem. %uB\n", "clusters_argmin_shfl", argmin_grid_dim.x, argmin_grid_dim.y, argmin_grid_dim.z, argmin_block_dim.x, argmin_block_dim.y, argmin_block_dim.z, argmin_sh_mem);
 
 		CHECK_CUDA_ERROR(cudaMemset(d_clusters_len, 0, k * sizeof(uint32_t)));
+
+#if COMPUTE_DISTANCES_KERNEL==3
+        /* Distances are stored in column-major order if we used fast matrix-centric */
 		clusters_argmin_shfl<<<argmin_grid_dim, 
                                 argmin_block_dim, 
                                 argmin_sh_mem>>>
                                 (n, k, d_distances, d_points_clusters, 
-                                 d_clusters_len, argmin_warps_per_block, INFNTY);
+                                 d_clusters_len, argmin_warps_per_block, INFNTY,
+                                 false);
+#else
+		clusters_argmin_shfl<<<argmin_grid_dim, 
+                                argmin_block_dim, 
+                                argmin_sh_mem>>>
+                                (n, k, d_distances, d_points_clusters, 
+                                 d_clusters_len, argmin_warps_per_block, INFNTY,
+                                 true);
+#endif
 
 #if PERFORMANCES_KERNEL_ARGMIN
 

@@ -476,7 +476,7 @@ TEST_CASE("kernel_argmin", "[kernel][argmin]") {
 				dim3 grid_dim, block_dim;
 				uint32_t sh_mem, warps_per_block;
 				schedule_argmin_kernel(&deviceProps, n, k, &grid_dim, &block_dim, &warps_per_block, &sh_mem);
-				clusters_argmin_shfl<<<grid_dim, block_dim, sh_mem>>>(n, k, d_distances, d_points_clusters, d_clusters_len, warps_per_block, infty);
+				clusters_argmin_shfl<<<grid_dim, block_dim, sh_mem>>>(n, k, d_distances, d_points_clusters, d_clusters_len, warps_per_block, infty, true);
 				cudaDeviceSynchronize();
 
 				uint32_t *h_points_clusters = new uint32_t[n];
@@ -489,6 +489,32 @@ TEST_CASE("kernel_argmin", "[kernel][argmin]") {
 						if (TEST_DEBUG) { printf("j: %u, ii: %u, v: %.0f\n", j, ii, h_distances[ii]); }
 						if (h_distances[ii] < min) {
 							min = h_distances[ii];
+							idx = j;
+						}
+					}
+
+					REQUIRE( h_points_clusters[i] == idx );
+					if (TEST_DEBUG) { printf("%-7u -> %5u (should be %-5u %.3f)\n", i, h_points_clusters[i], idx, min); }
+				}
+
+                // Test col major
+                initRandomMatrixColMaj(h_distances, n, k); 
+
+				cudaMemcpy(d_distances, h_distances, sizeof(DATA_TYPE) * SIZE,	cudaMemcpyHostToDevice);
+				cudaMemset(d_clusters_len, 0, k * sizeof(uint32_t));
+                cudaMemset(d_points_clusters, 0, sizeof(uint32_t)*n);
+
+				clusters_argmin_shfl<<<grid_dim, block_dim, sh_mem>>>(n, k, d_distances, d_points_clusters, d_clusters_len, warps_per_block, infty, false);
+				cudaMemcpy(h_points_clusters, d_points_clusters, sizeof(uint32_t) * n,	cudaMemcpyDeviceToHost);
+
+
+				for (uint32_t i = 0; i < n; i++) {
+					DATA_TYPE min = infty;
+					uint32_t idx = 0;
+					for (uint32_t j = 0; j < k; j++) {
+						if (TEST_DEBUG) { printf("j: %u, i: %u, v: %.0f\n", j, i, h_distances[i + j * n]); }
+						if (h_distances[i + j * n] < min) {
+							min = h_distances[i + j * n];
 							idx = j;
 						}
 					}

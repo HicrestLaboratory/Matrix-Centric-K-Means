@@ -36,13 +36,20 @@ __device__ Pair warp_argmin (float a) {
  * @param warps_per_block used to avoid useless compoutations
  * @param infty max value for DATA_TYPE
  */
-__global__ void clusters_argmin_shfl(const uint32_t n, const uint32_t k, DATA_TYPE* d_distances, uint32_t* points_clusters,  uint32_t* clusters_len, uint32_t warps_per_block, DATA_TYPE infty) {
+__global__ void clusters_argmin_shfl(const uint32_t n, const uint32_t k, 
+                                     DATA_TYPE* d_distances, uint32_t* points_clusters,  
+                                     uint32_t* clusters_len, uint32_t warps_per_block, DATA_TYPE infty,
+                                     bool is_row_major) {
   const uint32_t warpSizeLog2 = sizeof(uint32_t) * CHAR_BIT - clz(warpSize) - 1;
   extern __shared__ Pair shrd[];
   const uint32_t tid = threadIdx.x;
   const uint32_t lane = tid & (warpSize - 1);
   const uint32_t wid = tid >> warpSizeLog2;
-  const uint32_t idx = blockIdx.x * k + tid;
+  uint32_t idx;
+  if (is_row_major)
+    idx = blockIdx.x * k + tid;
+  else
+    idx = tid * n + blockIdx.x; //TODO: This seems like it prevents coalescing 
   float val = tid < k ? d_distances[idx] : infty;
 
   Pair p = warp_argmin(val);
