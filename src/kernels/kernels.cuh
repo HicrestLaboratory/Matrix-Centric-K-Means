@@ -57,4 +57,6 @@ __global__ void clusters_argmin_shfl(const uint32_t n, const uint32_t k, DATA_TY
 
 __global__ void compute_centroids_shfl(DATA_TYPE* centroids, const DATA_TYPE* points, const uint32_t* points_clusters, const uint32_t* clusters_len, const uint64_t n, const uint32_t d, const uint32_t k, const uint32_t round);
 
+void check_p_correctness(DATA_TYPE * P, DATA_TYPE * points, uint32_t n, uint32_t d);
+
 #endif

@@ -33,8 +33,9 @@ const int num_colors = sizeof(colors)/sizeof(uint32_t);
  * 0: compute_distances_one_point_per_warp
  * 1: compute_distances_shfl
  * 2: matrix multiplication
+ * 3: matrix multiplication v2
  */
-#define COMPUTE_DISTANCES_KERNEL 2
+#define COMPUTE_DISTANCES_KERNEL 3
 
 class Kmeans {
   private:

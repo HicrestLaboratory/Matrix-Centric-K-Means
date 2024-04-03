@@ -381,5 +381,27 @@ void compute_gemm_distances_free () {
 }
 
 
+void check_p_correctness(DATA_TYPE * P, DATA_TYPE * points, uint32_t n, uint32_t d) 
+{
+    for (uint32_t i=0; i<n; i++) {
+        for (uint32_t j=0; j<d; j+=3) {
+            DATA_TYPE val = points[i*d + (j/3)];
+            uint32_t base_idx = i + n*j;
+            if( is_close(P[base_idx], val*val) && is_close(P[base_idx + n], -2*val) 
+                                                   && is_close(P[base_idx + 2*n], 1)) {
+                continue;
+            } else {
+                cout<<"P correctness failed ... "<<endl
+                    <<"Val: "<<val<<endl
+                    <<"(i: "<<i<<", j: "<<j<<")"<<endl
+                    <<"("<<P[base_idx]<<","<<P[base_idx+n]<<","<<P[base_idx+2*n]<<")"<<endl;
+                exit(1);
+            }
+
+        }
+    }
+    cout<<"P correctness passed!"<<endl;
+}
+
 
 /*** END Matrix multiplication ***/

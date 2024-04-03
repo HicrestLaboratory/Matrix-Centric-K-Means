@@ -190,7 +190,24 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     uint32_t p_rounds = ceil((float)p_rows / (float)p_mat_block_dim);
 
     compute_p_matrix<<<p_mat_grid_dim, p_mat_block_dim>>>(d_points, d_P, d, n, k, p_rounds);
+
+
+    //Debug
+    DATA_TYPE * h_points_debug = new DATA_TYPE[n*d];
+    CHECK_CUDA_ERROR(cudaMemcpy(h_points_debug, d_points, sizeof(DATA_TYPE)*n*d, cudaMemcpyDeviceToHost));
+    cout<<"Points matrix"<<endl;
+    //printMatrixRowMaj(h_points_debug, n, d);
+
+    DATA_TYPE * h_P_debug = new DATA_TYPE[p_size];
+    CHECK_CUDA_ERROR(cudaMemcpy(h_P_debug, d_P, sizeof(DATA_TYPE)*p_size, cudaMemcpyDeviceToHost));
+    cout<<"Computed P matrix"<<endl;
+    //printMatrixColMaj(h_P_debug, p_rows, p_cols);
+
+    check_p_correctness(h_P_debug, h_points_debug, n, d);
     
+    delete[] h_P_debug;
+    delete[] h_points_debug;
+
     // Malloc C here, but don't initialize it yet because we need to do that once per iteration
     CHECK_CUDA_ERROR(cudaMalloc(&d_C, sizeof(DATA_TYPE)*c_rows*c_cols));
 
