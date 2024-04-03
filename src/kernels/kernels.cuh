@@ -37,15 +37,22 @@ __global__ void compute_distances_shfl(DATA_TYPE* distances, const DATA_TYPE* ce
  * @param d 
  */
 __global__ void compute_point_associated_matrices (const DATA_TYPE* points, DATA_TYPE* associated_matrices, const uint32_t d, const uint32_t round);
+
+__global__ void compute_p_matrix(const DATA_TYPE * d_points, DATA_TYPE * d_P,
+                                            const uint32_t d, const uint32_t n, const uint32_t k,
+                                            const uint32_t rounds);
+
 void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp *deviceProps, 
     const uint32_t d1, const uint32_t n, const uint32_t k, 
      DATA_TYPE* d_P,  DATA_TYPE* d_C, DATA_TYPE* d_distances);
+
 __global__ void copy_diag(const DATA_TYPE * d_tmp, DATA_TYPE * d_distances, const int k, const int offset);
 void compute_gemm_distances_free ();
 
 void compute_spgemm_distances (cublasHandle_t& handle, cudaDeviceProp *deviceProps, 
     const uint32_t d1, const uint32_t n, const uint32_t k, 
-     DATA_TYPE* d_P,  DATA_TYPE* d_C, DATA_TYPE* d_distances);
+     DATA_TYPE* d_P,  DATA_TYPE* d_C, DATA_TYPE* d_distances) = delete;
+
 __global__ void clusters_argmin_shfl(const uint32_t n, const uint32_t k, DATA_TYPE* d_distances, uint32_t* points_clusters,  uint32_t* clusters_len, uint32_t warps_per_block, DATA_TYPE infty);
 
 __global__ void compute_centroids_shfl(DATA_TYPE* centroids, const DATA_TYPE* points, const uint32_t* points_clusters, const uint32_t* clusters_len, const uint64_t n, const uint32_t d, const uint32_t k, const uint32_t round);
