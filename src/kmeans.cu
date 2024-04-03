@@ -170,6 +170,9 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
 #elif COMPUTE_DISTANCES_KERNEL==3
 
+    cublasHandle_t cublasHandle;
+    CHECK_CUBLAS_ERROR(cublasCreate(&cublasHandle));
+
     /* Initialize P and C using d_points and d_centroids */
     
     DATA_TYPE * d_P;
@@ -272,10 +275,10 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
 #elif COMPUTE_DISTANCES_KERNEL==3
        
-        uint32_t compute_c_grid_dim = c_cols;
-        uint32_t compute_c_block_dim = min((size_t)deviceProps->maxThreadsPerBlock, c_rows/3);
-        uint32_t c_rounds = ceil((float)c_rows / (float)compute_c_block_dim);
-        compute_c_matrix<<<compute_c_grid_dim, compute_c_block_dim>>>(d_centroids, d_C, d, n, k, c_rounds); 
+        uint32_t c_mat_grid_dim = c_cols;
+        uint32_t c_mat_block_dim = min((size_t)deviceProps->maxThreadsPerBlock, c_rows/3);
+        uint32_t c_rounds = ceil((float)(c_rows/3) / (float)c_mat_block_dim);
+        compute_c_matrix<<<c_mat_grid_dim, c_mat_block_dim>>>(d_centroids, d_C, d, n, k, c_rounds); 
 
         //cout<<"Centroids"<<endl;
         //printMatrixRowMaj(h_centroids, k, d);
@@ -288,6 +291,10 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         //check_c_correctness(h_C_debug, h_centroids, k, d);
 
         //delete[] h_C_debug;
+
+        compute_gemm_distances_fast(cublasHandle,
+                                    d, n, k,
+                                    d_P, d_C, d_distances);
 
 #endif
 

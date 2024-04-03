@@ -21,26 +21,26 @@
  * @param round used if d > 32 to handle multiple warp per point
  */
 __global__ void compute_distances_one_point_per_warp(DATA_TYPE* distances, const DATA_TYPE* centroids, const DATA_TYPE* points, const uint32_t d, const uint32_t d_closest_2_pow, const uint32_t round) {
-  const uint32_t d_offset = threadIdx.x + (round * warpSize);
-  const uint32_t point_offset = blockIdx.x * d + d_offset;
-  const uint32_t center_offset = blockIdx.y * d + d_offset;
+	const uint32_t d_offset = threadIdx.x + (round * warpSize);
+	const uint32_t point_offset = blockIdx.x * d + d_offset;
+	const uint32_t center_offset = blockIdx.y * d + d_offset;
 
-  if (d_offset < d) {
-    DATA_TYPE dist = points[point_offset] - centroids[center_offset];
-    dist *= dist;
+	if (d_offset < d) {
+		DATA_TYPE dist = points[point_offset] - centroids[center_offset];
+		dist *= dist;
 
-    for (int i = (min(warpSize, d_closest_2_pow) >> 1); i > 0; i >>= 1) {
-      dist += __shfl_down_sync(DISTANCES_SHFL_MASK, dist, i);
-    }
+		for (int i = (min(warpSize, d_closest_2_pow) >> 1); i > 0; i >>= 1) {
+			dist += __shfl_down_sync(DISTANCES_SHFL_MASK, dist, i);
+		}
 
-    if (threadIdx.x == 0) {
-      if (round == 0) {
-        distances[(blockIdx.x * gridDim.y) + blockIdx.y] = dist;
-      } else {
-        distances[(blockIdx.x * gridDim.y) + blockIdx.y] += dist;
-      }
-    }
-  }
+		if (threadIdx.x == 0) {
+			if (round == 0) {
+				distances[(blockIdx.x * gridDim.y) + blockIdx.y] = dist;
+			} else {
+				distances[(blockIdx.x * gridDim.y) + blockIdx.y] += dist;
+			}
+		}
+	}
 }
 
 /**
@@ -55,38 +55,38 @@ __global__ void compute_distances_one_point_per_warp(DATA_TYPE* distances, const
  * @param d_closest_2_pow_log2 passed as parameter to avoid useless computations
  */
 __global__ void compute_distances_shfl(DATA_TYPE* distances, const DATA_TYPE* centroids, const DATA_TYPE* points, const uint32_t points_n, const uint32_t points_per_warp, const uint32_t d, const uint32_t d_closest_2_pow_log2) {
-  const uint32_t point_i = (blockIdx.x * points_per_warp) + (threadIdx.x >> (d_closest_2_pow_log2));
-  const uint32_t center_i = blockIdx.y;
-  const uint32_t d_i = threadIdx.x & ((0b1 << d_closest_2_pow_log2) - 1);
+	const uint32_t point_i = (blockIdx.x * points_per_warp) + (threadIdx.x >> (d_closest_2_pow_log2));
+	const uint32_t center_i = blockIdx.y;
+	const uint32_t d_i = threadIdx.x & ((0b1 << d_closest_2_pow_log2) - 1);
 
-  if (point_i < points_n && d_i < d) {
-    DATA_TYPE dist = points[point_i * d + d_i] - centroids[center_i * d + d_i];
-    dist *= dist;
+	if (point_i < points_n && d_i < d) {
+		DATA_TYPE dist = points[point_i * d + d_i] - centroids[center_i * d + d_i];
+		dist *= dist;
 
-    for (int i = (0b1 << (d_closest_2_pow_log2 - 1)); i > 0; i >>= 1) {
-      dist += __shfl_down_sync(DISTANCES_SHFL_MASK, dist, i);
-    }
+		for (int i = (0b1 << (d_closest_2_pow_log2 - 1)); i > 0; i >>= 1) {
+			dist += __shfl_down_sync(DISTANCES_SHFL_MASK, dist, i);
+		}
 
-    if (d_i == 0) {
-      distances[(point_i * gridDim.y) + center_i] = dist;
-    }
-  }
+		if (d_i == 0) {
+			distances[(point_i * gridDim.y) + center_i] = dist;
+		}
+	}
 }
 
 void schedule_distances_kernel(const cudaDeviceProp *props, const uint32_t n, const uint32_t d, const uint32_t k, dim3 *grid, dim3 *block, uint32_t* max_points_per_warp) {
-  const uint32_t warpSize = props->warpSize;
-  if (d <= warpSize && COMPUTE_DISTANCES_KERNEL == 1) {
-    *max_points_per_warp = warpSize / next_pow_2(d); // Does not work for d > 32
-    dim3 dist_grid_dim(ceil(((float) n) / (*max_points_per_warp)), k);
-    dim3 dist_block_dim((*max_points_per_warp) * next_pow_2(d));
-    *grid   = dist_grid_dim;
-    *block  = dist_block_dim;
-  } else {
-    dim3 dist_grid_dim(n, k);
-    dim3 dist_block_dim(min(d, warpSize));
-    *grid   = dist_grid_dim;
-    *block  = dist_block_dim;
-  }
+	const uint32_t warpSize = props->warpSize;
+	if (d <= warpSize && COMPUTE_DISTANCES_KERNEL == 1) {
+		*max_points_per_warp = warpSize / next_pow_2(d); // Does not work for d > 32
+		dim3 dist_grid_dim(ceil(((float) n) / (*max_points_per_warp)), k);
+		dim3 dist_block_dim((*max_points_per_warp) * next_pow_2(d));
+		*grid		= dist_grid_dim;
+		*block	= dist_block_dim;
+	} else {
+		dim3 dist_grid_dim(n, k);
+		dim3 dist_block_dim(min(d, warpSize));
+		*grid		= dist_grid_dim;
+		*block	= dist_block_dim;
+	}
 }
 
 /*** END Warp oriented ***/
@@ -104,39 +104,39 @@ void schedule_distances_kernel(const cudaDeviceProp *props, const uint32_t n, co
  * @param round to handle d > 32
  */
 __global__ void compute_point_associated_matrices (const DATA_TYPE* points, DATA_TYPE* associated_matrices, const uint32_t d, const uint32_t round) {
-  const uint32_t block_base = warpSize * round;
-  const uint32_t p_i = blockIdx.x;
-  const uint32_t d_i = block_base + threadIdx.x;
-  const uint32_t d_i1 = d_i + 1;
+	const uint32_t block_base = warpSize * round;
+	const uint32_t p_i = blockIdx.x;
+	const uint32_t d_i = block_base + threadIdx.x;
+	const uint32_t d_i1 = d_i + 1;
 
-  // If dim in the thread is greater than d, then return to avoid illegal writes
-  if (d_i >= d) { return; }
+	// If dim in the thread is greater than d, then return to avoid illegal writes
+	if (d_i >= d) { return; }
 
-  DATA_TYPE c = points[p_i * d + d_i];
-  DATA_TYPE c_11 = c * c;
+	DATA_TYPE c = points[p_i * d + d_i];
+	DATA_TYPE c_11 = c * c;
 
-  for (int i = blockDim.x >> 1; i > 0; i >>= 1) { // Reduce c_11
-    c_11 += __shfl_down_sync(DISTANCES_SHFL_MASK, c_11, i);
-  }
+	for (int i = blockDim.x >> 1; i > 0; i >>= 1) { // Reduce c_11
+		c_11 += __shfl_down_sync(DISTANCES_SHFL_MASK, c_11, i);
+	}
 
-  const uint32_t d1 = d + 1;
-  const uint32_t matrix_base_i = p_i * d1 * d1;
-  if (threadIdx.x == 0) {
-    associated_matrices[matrix_base_i] += c_11; // Write reduced c_11
-  }
+	const uint32_t d1 = d + 1;
+	const uint32_t matrix_base_i = p_i * d1 * d1;
+	if (threadIdx.x == 0) {
+		associated_matrices[matrix_base_i] += c_11; // Write reduced c_11
+	}
 
-  associated_matrices[matrix_base_i + d_i1] = -c;               // Write first column
-  associated_matrices[matrix_base_i + (d_i1 * d1) + d_i1] = 1;  // Write diagonal
+	associated_matrices[matrix_base_i + d_i1] = -c;								// Write first column
+	associated_matrices[matrix_base_i + (d_i1 * d1) + d_i1] = 1;	// Write diagonal
 #ifdef BATCHED_GEMM
-  associated_matrices[matrix_base_i + d_i1*d1] = -c; //if using batched gemm, need to store entire matrix since no batched symm
+	associated_matrices[matrix_base_i + d_i1*d1] = -c; //if using batched gemm, need to store entire matrix since no batched symm
 #endif
 }
 
 
 /* Remember, this has to be in column major order */
 __global__ void compute_p_matrix(const DATA_TYPE * d_points, DATA_TYPE * d_P, 
-                                    const uint32_t d, const uint32_t n, const uint32_t k,
-                                    const uint32_t rounds)
+                                const uint32_t d, const uint32_t n, const uint32_t k,
+                                const uint32_t rounds)
 {
     uint32_t point_dim_idx = blockIdx.x / 3;
 
@@ -146,7 +146,7 @@ __global__ void compute_p_matrix(const DATA_TYPE * d_points, DATA_TYPE * d_P,
         if (point_idx < n) {
             DATA_TYPE val = d_points[point_dim_idx + point_idx*d];
             uint32_t p_idx = blockIdx.x * n + point_idx;
-            
+                    
             if (blockIdx.x % 3 == 0)
                 d_P[p_idx] = val*val;
             else if (blockIdx.x % 3 == 1) 
@@ -156,14 +156,13 @@ __global__ void compute_p_matrix(const DATA_TYPE * d_points, DATA_TYPE * d_P,
 
         }
     }
-
-    
+		
 }
 
 
 __global__ void compute_c_matrix(const DATA_TYPE * d_centroids, DATA_TYPE * d_C, 
-                                    const uint32_t d, const uint32_t n, const uint32_t k,
-                                    const uint32_t rounds)
+                                const uint32_t d, const uint32_t n, const uint32_t k,
+                                const uint32_t rounds)
 {
     uint32_t centroid_base_idx = blockIdx.x * d;
     for (int round=0; round<rounds; round++) {
@@ -174,7 +173,7 @@ __global__ void compute_c_matrix(const DATA_TYPE * d_centroids, DATA_TYPE * d_C,
 
             d_C[c_idx] = (DATA_TYPE)1;
             d_C[c_idx + 1] = centroid;
-            d_C[c_idx + 2] = centroid*centroid;       
+            d_C[c_idx + 2] = centroid*centroid;				
         }
     }
 }
@@ -197,201 +196,220 @@ uint32_t last_nk = 0;
  * @param d_distances size: n * k
  */
 void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProps, 
-                              const uint32_t d1, const uint32_t n, const uint32_t k, 
-                              DATA_TYPE* d_P, DATA_TYPE* d_C, DATA_TYPE* d_distances) {
-  DATA_TYPE alpha = (DATA_TYPE)1;
-  DATA_TYPE beta = (DATA_TYPE)0;
-  uint32_t d1d1 = d1 * d1;
-  DATA_TYPE* P = d_P;
-  uint32_t max_k_d1 = max(k, d1);
-  if (last_nk <= 0 || (n * k) > last_nk) {
-    if (h_distances != NULL) delete[] h_distances;
-    h_distances = new DATA_TYPE[n * k];
-  }
-  if (d_tmp_dim <= 0 || max_k_d1 > d_tmp_dim) {
-    if (d_tmp != NULL) CHECK_CUDA_ERROR(cudaFree(d_tmp));
-    if (h_tmp != NULL) delete[] h_tmp;
-    CHECK_CUDA_ERROR(cudaMalloc(&d_tmp, max_k_d1 * max_k_d1 * sizeof(DATA_TYPE)));
-    h_tmp = new DATA_TYPE[max_k_d1 * max_k_d1];
-  }
+                                const uint32_t d1, const uint32_t n, const uint32_t k, 
+                                DATA_TYPE* d_P, DATA_TYPE* d_C, DATA_TYPE* d_distances) {
+	DATA_TYPE alpha = (DATA_TYPE)1;
+	DATA_TYPE beta = (DATA_TYPE)0;
+	uint32_t d1d1 = d1 * d1;
+	DATA_TYPE* P = d_P;
+	uint32_t max_k_d1 = max(k, d1);
+	if (last_nk <= 0 || (n * k) > last_nk) {
+		if (h_distances != NULL) delete[] h_distances;
+		h_distances = new DATA_TYPE[n * k];
+	}
+	if (d_tmp_dim <= 0 || max_k_d1 > d_tmp_dim) {
+		if (d_tmp != NULL) CHECK_CUDA_ERROR(cudaFree(d_tmp));
+		if (h_tmp != NULL) delete[] h_tmp;
+		CHECK_CUDA_ERROR(cudaMalloc(&d_tmp, max_k_d1 * max_k_d1 * sizeof(DATA_TYPE)));
+		h_tmp = new DATA_TYPE[max_k_d1 * max_k_d1];
+	}
 
-  DATA_TYPE * d_tmp_arr;
-  CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_tmp_arr), sizeof(DATA_TYPE) * n * k * k));
+	DATA_TYPE * d_tmp_arr;
+	CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_tmp_arr), sizeof(DATA_TYPE) * n * k * k));
 
 #ifdef BATCHED_GEMM
 
-  DATA_TYPE * h_ptrs_arr[n*4];
-  DATA_TYPE ** d_ptrs_arr;
-  CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_ptrs_arr), sizeof(DATA_TYPE *) * n * 4));
+	DATA_TYPE * h_ptrs_arr[n*4];
+	DATA_TYPE ** d_ptrs_arr;
+	CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_ptrs_arr), sizeof(DATA_TYPE *) * n * 4));
 
-  // Store n pointers to c
-  DATA_TYPE ** h_C_arr = h_ptrs_arr;
-  DATA_TYPE ** d_C_arr = d_ptrs_arr;
-  
-  // Store pointers to each point matrix
-  DATA_TYPE ** h_P_arr = h_ptrs_arr + n;
-  DATA_TYPE ** d_P_arr = d_ptrs_arr + n;
+	// Store n pointers to c
+	DATA_TYPE ** h_C_arr = h_ptrs_arr;
+	DATA_TYPE ** d_C_arr = d_ptrs_arr;
+	
+	// Store pointers to each point matrix
+	DATA_TYPE ** h_P_arr = h_ptrs_arr + n;
+	DATA_TYPE ** d_P_arr = d_ptrs_arr + n;
 
-  // Store pointers to the temporary c*P matrices
-  DATA_TYPE ** h_tmp_arr2_ptrs = h_ptrs_arr + (2*n);
-  DATA_TYPE ** d_tmp_arr2_ptrs = d_ptrs_arr + (2*n);
+	// Store pointers to the temporary c*P matrices
+	DATA_TYPE ** h_tmp_arr2_ptrs = h_ptrs_arr + (2*n);
+	DATA_TYPE ** d_tmp_arr2_ptrs = d_ptrs_arr + (2*n);
 
-  // Store pointers to d_tmp_arr
-  DATA_TYPE ** h_tmp_arr_ptrs  = h_ptrs_arr + (3*n);
-  DATA_TYPE ** d_tmp_arr_ptrs = d_ptrs_arr + 3*n;
+	// Store pointers to d_tmp_arr
+	DATA_TYPE ** h_tmp_arr_ptrs  = h_ptrs_arr + (3*n);
+	DATA_TYPE ** d_tmp_arr_ptrs = d_ptrs_arr + 3*n;
 
-  // Temporary storage for c*P
-  DATA_TYPE * d_tmp_arr2;
-  CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_tmp_arr2), sizeof(DATA_TYPE) * n * k * d1));
+	// Temporary storage for c*P
+	DATA_TYPE * d_tmp_arr2;
+	CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_tmp_arr2), sizeof(DATA_TYPE) * n * k * d1));
 
 #pragma omp parallel for
-  for ( uint32_t i=0; i<n; i++) 
-  {
-    h_C_arr[i] = d_C;
-    h_P_arr[i] = P + (i*d1d1);
-    h_tmp_arr2_ptrs[i] = d_tmp_arr2 + (i*k*d1);
-    h_tmp_arr_ptrs[i] = d_tmp_arr + (i*k*k);
-  }
+	for ( uint32_t i=0; i<n; i++) 
+	{
+		h_C_arr[i] = d_C;
+		h_P_arr[i] = P + (i*d1d1);
+		h_tmp_arr2_ptrs[i] = d_tmp_arr2 + (i*k*d1);
+		h_tmp_arr_ptrs[i] = d_tmp_arr + (i*k*k);
+	}
 
-  // Copy all host pointers to device
-  CHECK_CUDA_ERROR(cudaMemcpyAsync(d_ptrs_arr, h_ptrs_arr, sizeof(DATA_TYPE *) * n * 4, cudaMemcpyHostToDevice));
+	// Copy all host pointers to device
+	CHECK_CUDA_ERROR(cudaMemcpyAsync(d_ptrs_arr, h_ptrs_arr, sizeof(DATA_TYPE *) * n * 4, cudaMemcpyHostToDevice));
 
-  CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
-#ifdef NVTX
-  PUSH_RANGE(__func__, 1)
-  PUSH_RANGE("GEMM-1", 2);
-#endif
-
-  CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle,
-                                        CUBLAS_OP_N, CUBLAS_OP_N,
-                                        k, d1, d1,
-                                        &alpha,
-                                        d_C_arr, k,
-                                        d_P_arr, d1,
-                                        &beta,
-                                        d_tmp_arr2_ptrs, k,
-                                        n));
-#ifdef NVTX
-  POP_RANGE;
-  PUSH_RANGE("GEMM-2", 2);
-#endif
-
-  CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle,
-                                        CUBLAS_OP_N, CUBLAS_OP_T,
-                                        k, k, d1,
-                                        &alpha,
-                                        d_tmp_arr2_ptrs, k,
-                                        d_C_arr, k,
-                                        &beta,
-                                        d_tmp_arr_ptrs, k,
-                                        n));
+	CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
 #ifdef NVTX
-  POP_RANGE;
-  POP_RANGE;
+	PUSH_RANGE(__func__, 1)
+	PUSH_RANGE("GEMM-1", 2);
 #endif
 
-  CHECK_CUDA_ERROR(cudaFree(d_ptrs_arr));
-  CHECK_CUDA_ERROR(cudaFree(d_tmp_arr2));
+	CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle,
+                                            CUBLAS_OP_N, CUBLAS_OP_N,
+                                            k, d1, d1,
+                                            &alpha,
+                                            d_C_arr, k,
+                                            d_P_arr, d1,
+                                            &beta,
+                                            d_tmp_arr2_ptrs, k,
+                                            n));
+#ifdef NVTX
+	POP_RANGE;
+	PUSH_RANGE("GEMM-2", 2);
+#endif
+
+	CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle,
+                                            CUBLAS_OP_N, CUBLAS_OP_T,
+                                            k, k, d1,
+                                            &alpha,
+                                            d_tmp_arr2_ptrs, k,
+                                            d_C_arr, k,
+                                            &beta,
+                                            d_tmp_arr_ptrs, k,
+                                            n));
+
+#ifdef NVTX
+	POP_RANGE;
+	POP_RANGE;
+#endif
+
+	CHECK_CUDA_ERROR(cudaFree(d_ptrs_arr));
+	CHECK_CUDA_ERROR(cudaFree(d_tmp_arr2));
 
 #else
 
-  for (uint32_t p_i = 0; p_i < n; ++p_i, P += d1d1) { // Iterate over points associated matrices
+	for (uint32_t p_i = 0; p_i < n; ++p_i, P += d1d1) { // Iterate over points associated matrices
 #if DEBUG_GEMM
-    printf("\nc\n");
-    DATA_TYPE* tmp_debug1 = new DATA_TYPE[n * d1];
-    CHECK_CUBLAS_ERROR(cublasGetMatrix(k, d1, sizeof(DATA_TYPE), d_C, k, tmp_debug1, k));
-    printMatrixColMajLimited(tmp_debug1, k, d1, 5, 5);
-    printf("\nP_%d associated matrix\n", p_i);
-    DATA_TYPE* tmp_debug = new DATA_TYPE[d1d1];
-    CHECK_CUBLAS_ERROR(cublasGetMatrix(d1, d1, sizeof(DATA_TYPE), P, d1, tmp_debug, d1));
-    printMatrixColMajLimited(tmp_debug, d1, d1, 5, 5);
-    delete[] tmp_debug;
-    delete[] tmp_debug1;
-    printf("\n");
+		printf("\nc\n");
+		DATA_TYPE* tmp_debug1 = new DATA_TYPE[n * d1];
+		CHECK_CUBLAS_ERROR(cublasGetMatrix(k, d1, sizeof(DATA_TYPE), d_C, k, tmp_debug1, k));
+		printMatrixColMajLimited(tmp_debug1, k, d1, 5, 5);
+		printf("\nP_%d associated matrix\n", p_i);
+		DATA_TYPE* tmp_debug = new DATA_TYPE[d1d1];
+		CHECK_CUBLAS_ERROR(cublasGetMatrix(d1, d1, sizeof(DATA_TYPE), P, d1, tmp_debug, d1));
+		printMatrixColMajLimited(tmp_debug, d1, d1, 5, 5);
+		delete[] tmp_debug;
+		delete[] tmp_debug1;
+		printf("\n");
 #endif
 
 
-    // c * P
-    // P is symmetric
-    CHECK_CUBLAS_ERROR(cublasSsymm(handle, 
-                                    CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER, 
-                                    k, d1, 
-                                    &alpha,
-                                    P, d1,
-                                    d_C, k,
-                                    &beta, d_tmp , k));
-
-#if DEBUG_GEMM
-    printf("\nc * P\n");
-    DATA_TYPE* tmp_debug2 = new DATA_TYPE[k * d1];
-    CHECK_CUBLAS_ERROR(cublasGetMatrix(k, d1, sizeof(DATA_TYPE), d_tmp, k, tmp_debug2, k));
-    printMatrixColMajLimited(tmp_debug2, k, d1, 5, 5);
-    delete[] tmp_debug2;
-    printf("\n");
-#endif
-
-    int offset = p_i * k * k ;
-    
-    CHECK_CUBLAS_ERROR(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, // (c * P) * c^T
-                                    k, k, d1, &alpha,
-                                    d_tmp, k,
-                                    d_C, k,
-                                    &beta, d_tmp_arr + offset, k));
-
-
+		// c * P
+		// P is symmetric
+		CHECK_CUBLAS_ERROR(cublasSsymm(handle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER, 
+																		k, d1, 
+																		&alpha,
+																		P, d1,
+																		d_C, k,
+																		&beta, d_tmp , k));
 
 #if DEBUG_GEMM
-    CHECK_CUBLAS_ERROR(cublasGetMatrix(k,k,sizeof(DATA_TYPE), d_tmp_arr + offset, k, h_tmp, k));
-    printf("Distances from P_%d\n", p_i);
-    printMatrixColMajLimited(h_tmp, k, k, 5, 5);
-    printf("\n----------\n");
+		printf("\nc * P\n");
+		DATA_TYPE* tmp_debug2 = new DATA_TYPE[k * d1];
+		CHECK_CUBLAS_ERROR(cublasGetMatrix(k, d1, sizeof(DATA_TYPE), d_tmp, k, tmp_debug2, k));
+		printMatrixColMajLimited(tmp_debug2, k, d1, 5, 5);
+		delete[] tmp_debug2;
+		printf("\n");
 #endif
 
-  }
-#endif
-  int num_blocks = 0;
-  int num_threads = 0;
-  schedule_copy_diag(deviceProps, k*n, &num_blocks, &num_threads);
+		int offset = p_i * k * k ;
+		
+		CHECK_CUBLAS_ERROR(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, // (c * P) * c^T
+                                        k, k, d1, &alpha,
+                                        d_tmp, k,
+                                        d_C, k,
+                                        &beta, d_tmp_arr + offset, k));
 
-  // Copy distances to GPU
-  copy_diag<<<num_blocks, num_threads>>>(d_tmp_arr, d_distances, k, n);
-  CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-  CHECK_CUDA_ERROR(cudaFree(d_tmp_arr));
+
+
+#if DEBUG_GEMM
+		CHECK_CUBLAS_ERROR(cublasGetMatrix(k,k,sizeof(DATA_TYPE), d_tmp_arr + offset, k, h_tmp, k));
+		printf("Distances from P_%d\n", p_i);
+		printMatrixColMajLimited(h_tmp, k, k, 5, 5);
+		printf("\n----------\n");
+#endif
+
+	}
+#endif
+	int num_blocks = 0;
+	int num_threads = 0;
+	schedule_copy_diag(deviceProps, k*n, &num_blocks, &num_threads);
+
+	// Copy distances to GPU
+	copy_diag<<<num_blocks, num_threads>>>(d_tmp_arr, d_distances, k, n);
+	CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+	CHECK_CUDA_ERROR(cudaFree(d_tmp_arr));
 }
 
 
 void schedule_copy_diag(cudaDeviceProp * props, const int kn, int * num_blocks, int * num_threads) {
-  *num_threads = (kn < props->maxThreadsPerBlock) ? kn : props->maxThreadsPerBlock;
-  *num_blocks = ceil(static_cast<float>(kn) / static_cast<float>(*num_threads));  
+	*num_threads = (kn < props->maxThreadsPerBlock) ? kn : props->maxThreadsPerBlock;
+	*num_blocks = ceil(static_cast<float>(kn) / static_cast<float>(*num_threads));	
 }
 
 
 __global__ void copy_diag(const DATA_TYPE * d_tmp_arr, DATA_TYPE * d_distances, const int k, const int n) {
-  
-  const int idx = threadIdx.x + blockIdx.x * blockDim.x;
-  
-  const int matrix_base = idx / k;
+	
+	const int idx = threadIdx.x + blockIdx.x * blockDim.x;
+	
+	const int matrix_base = idx / k;
 
-  const int diag_idx = idx % k;
+	const int diag_idx = idx % k;
 
-  if (idx<(k*n)) {
-    d_distances[idx] = d_tmp_arr[matrix_base*k*k + diag_idx + diag_idx*k];
-  }
+	if (idx<(k*n)) {
+		d_distances[idx] = d_tmp_arr[matrix_base*k*k + diag_idx + diag_idx*k];
+	}
 
 }
 
 
 void compute_gemm_distances_free () {
-  if (d_tmp != NULL) CHECK_CUDA_ERROR(cudaFree(d_tmp));
-  if (h_distances != NULL) delete[] h_distances;
-  if (h_tmp != NULL) delete[] h_tmp;
-  d_tmp = NULL;
-  h_distances = NULL;
-  h_tmp = NULL;
+	if (d_tmp != NULL) CHECK_CUDA_ERROR(cudaFree(d_tmp));
+	if (h_distances != NULL) delete[] h_distances;
+	if (h_tmp != NULL) delete[] h_tmp;
+	d_tmp = NULL;
+	h_distances = NULL;
+	h_tmp = NULL;
 }
 
+
+void compute_gemm_distances_fast(cublasHandle_t& handle, 
+                                const uint32_t d, const uint32_t n, const uint32_t k, 
+                                DATA_TYPE* d_P, DATA_TYPE* d_C, DATA_TYPE* d_distances)
+{
+    const DATA_TYPE alpha = 1.0;
+    const DATA_TYPE beta = 0.0;
+
+    const uint32_t d3 = d * 3;
+
+    CHECK_CUBLAS_ERROR(cublasSgemm(handle, 
+                                 CUBLAS_OP_N, CUBLAS_OP_N,
+                                 n, k, d3,
+                                 &alpha,
+                                 d_P, n,
+                                 d_C, d3,
+                                 &beta,
+                                 d_distances, n));
+
+}
 
 void check_p_correctness(DATA_TYPE * P, DATA_TYPE * points, uint32_t n, uint32_t d) 
 {
@@ -400,13 +418,13 @@ void check_p_correctness(DATA_TYPE * P, DATA_TYPE * points, uint32_t n, uint32_t
             DATA_TYPE val = points[i*d + (j/3)];
             uint32_t base_idx = i + n*j;
             if( is_close(P[base_idx], val*val) && is_close(P[base_idx + n], -2*val) 
-                                                   && is_close(P[base_idx + 2*n], 1)) {
+                                               && is_close(P[base_idx + 2*n], 1)) {
                 continue;
             } else {
                 cout<<"P correctness failed ... "<<endl
-                    <<"Val: "<<val<<endl
-                    <<"(i: "<<i<<", j: "<<j<<")"<<endl
-                    <<"("<<P[base_idx]<<","<<P[base_idx+n]<<","<<P[base_idx+2*n]<<")"<<endl;
+                        <<"Val: "<<val<<endl
+                        <<"(i: "<<i<<", j: "<<j<<")"<<endl
+                        <<"("<<P[base_idx]<<","<<P[base_idx+n]<<","<<P[base_idx+2*n]<<")"<<endl;
                 exit(1);
             }
 
@@ -421,7 +439,7 @@ void check_c_correctness(DATA_TYPE * C, DATA_TYPE * centroids, uint32_t k, uint3
     for (uint32_t j=0; j<k; j++) {
         for (uint32_t i=0; i<3*d; i+=3) {
             DATA_TYPE val = centroids[(i/3) + j*d];
-            
+                    
             uint32_t base_idx = j*3*d + i;
 
             if (is_close(C[base_idx], 1) && 
@@ -430,9 +448,9 @@ void check_c_correctness(DATA_TYPE * C, DATA_TYPE * centroids, uint32_t k, uint3
                 continue;
             } else {
                 cout<<"C correctness failed ... "<<endl
-                    <<"Val: "<<val<<endl
-                    <<"(i: "<<i<<", j: "<<j<<")"<<endl
-                    <<"("<<C[base_idx]<<","<<C[base_idx+1]<<","<<C[base_idx+2]<<")"<<endl;
+                        <<"Val: "<<val<<endl
+                        <<"(i: "<<i<<", j: "<<j<<")"<<endl
+                        <<"("<<C[base_idx]<<","<<C[base_idx+1]<<","<<C[base_idx+2]<<")"<<endl;
                 exit(1);
             }
 

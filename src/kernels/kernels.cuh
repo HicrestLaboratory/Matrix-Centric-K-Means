@@ -50,6 +50,10 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp *deviceProps
     const uint32_t d1, const uint32_t n, const uint32_t k, 
      DATA_TYPE* d_P,  DATA_TYPE* d_C, DATA_TYPE* d_distances);
 
+void compute_gemm_distances_fast (cublasHandle_t& handle, 
+    const uint32_t d, const uint32_t n, const uint32_t k, 
+     DATA_TYPE* d_P,  DATA_TYPE* d_C, DATA_TYPE* d_distances);
+
 __global__ void copy_diag(const DATA_TYPE * d_tmp, DATA_TYPE * d_distances, const int k, const int offset);
 void compute_gemm_distances_free ();
 
