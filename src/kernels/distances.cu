@@ -7,7 +7,7 @@
 #include "../kmeans.cuh"
 
 //#define DEBUG_GEMM 1
-//#define BATCHED_GEMM
+#define BATCHED_GEMM
 
 /*** Warp oriented ***/
 
@@ -160,15 +160,40 @@ __global__ void compute_p_matrix(const DATA_TYPE * d_points, DATA_TYPE * d_P,
 }
 
 
-__global__ void compute_c_matrix(const DATA_TYPE * d_centroids, DATA_TYPE * d_C, 
-                                const uint32_t d, const uint32_t n, const uint32_t k,
-                                const uint32_t rounds)
+// Assumes d_centroids is in row major order
+__global__ void compute_c_matrix_row_major(const DATA_TYPE * d_centroids, 
+                                            DATA_TYPE * d_C, 
+                                            const uint32_t d, const uint32_t n, 
+                                            const uint32_t k,
+                                            const uint32_t rounds)
 {
     uint32_t centroid_base_idx = blockIdx.x * d;
     for (int round=0; round<rounds; round++) {
         uint32_t centroid_idx = (round * blockDim.x + threadIdx.x);
         if (centroid_idx < d) {
             DATA_TYPE centroid = d_centroids[centroid_base_idx + centroid_idx];
+            uint32_t c_idx = blockIdx.x * (3*d) + centroid_idx * 3;
+
+            d_C[c_idx] = (DATA_TYPE)1;
+            d_C[c_idx + 1] = centroid;
+            d_C[c_idx + 2] = centroid*centroid;				
+        }
+    }
+}
+
+
+// Assumes d_centroids is in column major order
+__global__ void compute_c_matrix_col_major(const DATA_TYPE * d_centroids, 
+                                            DATA_TYPE * d_C, 
+                                            const uint32_t d, const uint32_t n, 
+                                            const uint32_t k,
+                                            const uint32_t rounds)
+{
+    uint32_t centroid_base_idx = (blockIdx.x); 
+    for (int round=0; round<rounds; round++) {
+        uint32_t centroid_idx = (round * blockDim.x + threadIdx.x);
+        if (centroid_idx < d) {
+            DATA_TYPE centroid = d_centroids[centroid_base_idx + centroid_idx*k];
             uint32_t c_idx = blockIdx.x * (3*d) + centroid_idx * 3;
 
             d_C[c_idx] = (DATA_TYPE)1;

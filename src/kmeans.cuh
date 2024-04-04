@@ -37,6 +37,13 @@ const int num_colors = sizeof(colors)/sizeof(uint32_t);
  */
 #define COMPUTE_DISTANCES_KERNEL 3
 
+/**
+ * @brief
+ * 0: compute_centroids_shfl
+ * 1: compute_centroids_gemm
+ */
+#define COMPUTE_CENTROIDS_KERNEL 1
+
 class Kmeans {
   private:
     const size_t n;
@@ -62,6 +69,7 @@ class Kmeans {
      */
     void init_centroids(Point<DATA_TYPE>** points);
     bool cmp_centroids();
+    bool cmp_centroids_col_maj();
 
   public:
     Kmeans(const size_t n, const uint32_t d, const uint32_t k, const float tol, const int *seed, Point<DATA_TYPE>** points, cudaDeviceProp* deviceProps);
