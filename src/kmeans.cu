@@ -13,6 +13,7 @@
 
 #include "kernels/kernels.cuh"
 
+
 using namespace std;
 
 const DATA_TYPE INFNTY = numeric_limits<DATA_TYPE>::infinity();
@@ -276,7 +277,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
 #elif COMPUTE_DISTANCES_KERNEL==3
        
-        uint32_t c_mat_grid_dim = c_cols; //3*d
+        uint32_t c_mat_grid_dim = c_cols; 
         uint32_t c_mat_block_dim = min((size_t)deviceProps->maxThreadsPerBlock, c_rows/3);
         uint32_t c_rounds = ceil((float)(c_rows/3) / (float)(c_mat_block_dim));
 
@@ -335,10 +336,18 @@ uint64_t Kmeans::run (uint64_t maxiter) {
             for (uint32_t ki = 0; ki < k; ++ki) {
                 DATA_TYPE dist = 0, tmp;
                 for (uint32_t di = 0; di < d; ++di) {
+#if COMPUTE_CENTROIDS_KERNEL==1
+                    tmp = h_points[ni * d + di] - h_centroids[ki + di*k];
+#else
                     tmp = h_points[ni * d + di] - h_centroids[ki * d + di];
+#endif
                     dist += tmp * tmp;
                 }
+#if COMPUTE_DISTANCES_KERNEL==3
+                cpu_distances[ni + n*ki] = dist;
+#else
                 cpu_distances[ni * k + ki] = dist;
+#endif
             }
         }
 
@@ -458,7 +467,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
         const uint32_t v_rounds = ceil((float)n / (float)v_mat_block_dim);
         compute_v_matrix<<<v_mat_grid_dim, v_mat_block_dim>>>(d_V, d_points_clusters, d_clusters_len,
-                                                                n, k, rounds);
+                                                                n, k, v_rounds);
 
         compute_centroids_gemm(cublasHandle,
                                 d, n, k,
@@ -526,7 +535,11 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         cout << endl << "CENTROIDS (GPU)" << endl;
         for (uint32_t i = 0; i < k; ++i) {
             for (uint32_t j = 0; j < d; ++j)
-                printf("%.3f, ", h_centroids[i * d + j]);
+#if COMPUTE_CENTROIDS_KERNEL==1
+                printf("%.3f, ", h_centroids[i + j*k]);
+#else
+                printf("%.3f, ", h_centroids[i*d + j]);
+#endif
             cout << endl;
         }
 

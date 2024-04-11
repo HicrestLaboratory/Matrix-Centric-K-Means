@@ -122,7 +122,7 @@ __global__ void compute_v_matrix(DATA_TYPE * d_V,
         if (point_idx < n) {
             const uint32_t this_cluster_idx = d_points_clusters[point_idx];
             DATA_TYPE val = (cluster_idx == this_cluster_idx) ?
-                                ((float) 1) / ((float) d_clusters_len[cluster_idx]) : 0;
+                                ((DATA_TYPE) 1) / ((DATA_TYPE) d_clusters_len[cluster_idx]) : 0;
             d_V[cluster_idx + k*point_idx] = val; //col major
         }
     }
