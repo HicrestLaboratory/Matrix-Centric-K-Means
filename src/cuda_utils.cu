@@ -7,6 +7,14 @@
 
 using namespace std;
 
+void checkCUSPARSE(cusparseStatus_t err, const char* const func, const char* const file, const int line) {
+  if (err != CUSPARSE_STATUS_SUCCESS) {
+    cerr << "CUSPARSE Runtime Error at: " << file << ":" << line << endl;
+    // cerr << cudaGetErrorString(err) << " " << func << endl;
+    exit(EXIT_FAILURE);
+  }
+}
+
 void checkCUBLAS(cublasStatus_t err, const char* const func, const char* const file, const int line) {
   if (err != CUBLAS_STATUS_SUCCESS) {
     cerr << "CUBLAS Runtime Error at: " << file << ":" << line << endl;

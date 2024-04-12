@@ -146,6 +146,11 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     CHECK_CUBLAS_ERROR(cublasCreate(&cublasHandle));
 #endif
 
+#if COMPUTE_CENTROIDS_KERNEL==1
+    cusparseHandle_t cusparseHandle;
+    CHECK_CUSPARSE_ERROR(cusparseCreate(&cusparseHandle));
+#endif
+
 #if COMPUTE_DISTANCES_KERNEL==1
     dim3 dist_grid_dim, dist_block_dim;
     uint32_t dist_max_points_per_warp;
@@ -187,11 +192,9 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
     size_t p_rows = n;
     size_t p_cols = 3*d;
-    size_t p_size = p_rows*p_cols;
 
     size_t c_rows = 3*d;
     size_t c_cols = k;
-    size_t c_size = c_rows*c_cols;
 
     CHECK_CUDA_ERROR(cudaMalloc(&d_P, sizeof(DATA_TYPE)*p_rows*p_cols));
 
@@ -209,11 +212,47 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 #if COMPUTE_CENTROIDS_KERNEL==1
         
     /* Malloc V for later */
-    DATA_TYPE * d_V;
     const uint32_t v_rows = k;
     const uint32_t v_cols = n;
     const uint32_t v_size = v_rows*v_cols;
+    /*
+    DATA_TYPE * d_V;
     CHECK_CUDA_ERROR(cudaMalloc(&d_V, v_size*sizeof(DATA_TYPE)));
+    */
+
+    DATA_TYPE * d_V_vals;
+    int32_t * d_V_rowinds;
+    int32_t * d_V_col_offsets;
+
+    CHECK_CUDA_ERROR(cudaMalloc(&d_V_vals, sizeof(DATA_TYPE)*n));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_V_rowinds, sizeof(int32_t)*n));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_V_col_offsets, sizeof(int32_t)*(n+1)));
+	
+    cusparseSpMatDescr_t V_descr;
+    cusparseDnMatDescr_t P_descr;
+    cusparseDnMatDescr_t C_descr;
+
+    CHECK_CUSPARSE_ERROR(cusparseCreateCsc(&V_descr,
+                                            k, n, n,
+                                            d_V_col_offsets,
+                                            d_V_rowinds,
+                                            d_V_vals,
+                                            CUSPARSE_INDEX_32I,
+                                            CUSPARSE_INDEX_32I,
+                                            CUSPARSE_INDEX_BASE_ZERO,
+                                            CUDA_R_32F));
+
+    CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&P_descr,
+                                              n, d, n,
+                                              d_points,
+                                              CUDA_R_32F,
+                                              CUSPARSE_ORDER_ROW));
+
+    CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&C_descr,
+                                              k, d, k,
+                                              d_centroids,
+                                              CUDA_R_32F,
+                                              CUSPARSE_ORDER_COL));
 
 #endif
 
@@ -463,6 +502,8 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 		}
 #elif COMPUTE_CENTROIDS_KERNEL==1
 
+        // TODO: Make V sparse and replace this with cusparse spmm
+        /*
         const uint32_t v_mat_grid_dim = k;
         const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
         const uint32_t v_rounds = ceil((float)n / (float)v_mat_block_dim);
@@ -473,6 +514,26 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                 d, n, k,
                                 d_V, d_points,
                                 d_centroids);
+        */
+
+        const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
+        const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
+
+        compute_v_sparse<<<v_mat_grid_dim, v_mat_block_dim>>>(d_V_vals, d_V_rowinds, d_V_col_offsets, 
+                                                              d_points_clusters, d_clusters_len,
+                                                              n);
+        
+        compute_centroids_spmm(cusparseHandle,
+                                d, n, k,
+                                d_V_vals, 
+                                d_V_rowinds,
+                                d_V_col_offsets,
+                                d_centroids,
+								V_descr,
+								P_descr,
+                                C_descr);
+                                
+                                                            
 
 #else
         cerr<<"INVALID COMPUTE_CENTROIDS_KERNEL, GOT " <<COMPUTE_CENTROIDS_KERNEL<<" expected 0 or 1"<<endl;
@@ -617,7 +678,11 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 #endif
 
 #if COMPUTE_CENTROIDS_KERNEL==1
-    CHECK_CUDA_ERROR(cudaFree(d_V));
+    //CHECK_CUDA_ERROR(cudaFree(d_V));
+    CHECK_CUDA_ERROR(cudaFree(d_V_vals));
+    CHECK_CUDA_ERROR(cudaFree(d_V_rowinds));
+    CHECK_CUDA_ERROR(cudaFree(d_V_col_offsets));
+    CHECK_CUSPARSE_ERROR(cusparseDestroy(cusparseHandle));
 #endif
 
 #if COMPUTE_DISTANCES_KERNEL>=2

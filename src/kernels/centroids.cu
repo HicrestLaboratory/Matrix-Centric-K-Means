@@ -129,6 +129,8 @@ __global__ void compute_v_matrix(DATA_TYPE * d_V,
 }
 
 
+
+
 void compute_centroids_gemm(cublasHandle_t& handle,
                             const uint32_t d, const uint32_t n, const uint32_t k,
                             const DATA_TYPE * d_V, const DATA_TYPE * d_points,
@@ -148,7 +150,78 @@ void compute_centroids_gemm(cublasHandle_t& handle,
 }
 
 
+//GLOBAL TODO: Handle case where we can't allocate enough blocks to make this work
+__global__ void compute_v_sparse(DATA_TYPE * d_vals,
+                                 int32_t * d_rowinds,
+                                 int32_t * d_col_offsets,
+                                 const uint32_t * d_points_clusters,
+                                 const uint32_t * d_clusters_len,
+                                 const uint32_t n) 
+{
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x; 
+    if (tid<n) {
+        d_vals[tid] = ((DATA_TYPE) 1) / (DATA_TYPE)(d_clusters_len[d_points_clusters[tid]]);
+        d_rowinds[tid] = d_points_clusters[tid];
+        d_col_offsets[tid] = tid;
+    }
+    d_col_offsets[n] = n; //This might be horrible
+}
 
+
+void compute_centroids_spmm(cusparseHandle_t& handle,
+                            const uint32_t d, const uint32_t n, const uint32_t k,
+                            const DATA_TYPE * d_V_vals,
+                            const int32_t * d_V_rowinds,
+                            const int32_t * d_V_col_offsets,
+                            DATA_TYPE * d_centroids,
+                            cusparseSpMatDescr_t& V_descr,
+                            cusparseDnMatDescr_t& P_descr,
+                            cusparseDnMatDescr_t& C_descr)
+{
+
+
+    CHECK_CUSPARSE_ERROR(cusparseCscSetPointers(V_descr, (void*)d_V_col_offsets, (void*)d_V_rowinds, (void*)d_V_vals));
+    CHECK_CUSPARSE_ERROR(cusparseDnMatSetValues(C_descr, (void*)d_centroids));
+
+    
+    const DATA_TYPE alpha = 1.0;
+    const DATA_TYPE beta = 0.0;
+    
+    size_t buff_size = 0;
+
+    CHECK_CUSPARSE_ERROR(cusparseSpMM_bufferSize(handle,
+                                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                                  &alpha,
+                                                  V_descr,
+                                                  P_descr,
+                                                  &beta,
+                                                  C_descr,
+                                                  CUDA_R_32F,
+                                                  CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                                  &buff_size));
+    
+    void * d_buff;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_buff, buff_size));
+
+    CHECK_CUSPARSE_ERROR(cusparseSpMM(handle,
+                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                      &alpha,
+                                      V_descr,
+                                      P_descr,
+                                      &beta,
+                                      C_descr,
+                                      CUDA_R_32F,
+                                      CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                      d_buff));
+
+    CHECK_CUSPARSE_ERROR(cusparseDnMatGetValues(C_descr, (void**)&d_centroids));
+
+    //TODO: Since we're allowed to have the output matrix in row-major form, we should probably change the stuff in
+    // kmeans.cu to store d_centroids in row major form
+
+}
 
 
 

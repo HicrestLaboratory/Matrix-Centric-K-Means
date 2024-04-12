@@ -84,6 +84,25 @@ void compute_centroids_gemm(cublasHandle_t& handle,
                             const DATA_TYPE * d_V, const DATA_TYPE * d_points,
                             DATA_TYPE * d_centroids);
 
+
+__global__ void compute_v_sparse(DATA_TYPE * d_vals,
+                                 int32_t * d_rowinds,
+                                 int32_t * d_col_offsets,
+                                 const uint32_t * d_points_clusters,
+                                 const uint32_t * d_clusters_len,
+                                 const uint32_t n);
+
+void compute_centroids_spmm(cusparseHandle_t& handle,
+                            const uint32_t d, const uint32_t n, const uint32_t k,
+                            const DATA_TYPE * d_V_vals, 
+                            const int32_t * d_V_rowinds,
+                            const int32_t * d_V_col_offsets,
+                            DATA_TYPE * d_centroids,
+                            cusparseSpMatDescr_t& V_descr,
+                            cusparseDnMatDescr_t& P_descr,
+                            cusparseDnMatDescr_t& C_descr);
+
+
 void check_p_correctness(DATA_TYPE * P, DATA_TYPE * points, uint32_t n, uint32_t d);
 void check_c_correctness(DATA_TYPE * C, DATA_TYPE * centroids, uint32_t k, uint32_t d);
 

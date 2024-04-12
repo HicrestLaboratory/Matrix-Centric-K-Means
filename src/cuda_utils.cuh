@@ -3,6 +3,7 @@
 
 #include "include/common.h"
 #include <cublas_v2.h>
+#include <cusparse.h>
 
 using namespace std;
 
@@ -10,11 +11,12 @@ using namespace std;
 #define IDX2C(i,j,ld) (((j)*(ld))+(i))
 
 #define CHECK_CUBLAS_ERROR(val)   checkCUBLAS((val), #val, __FILE__, __LINE__)
-#define CHECK_CUSPARSE_ERROR(val)   checkSPARSE((val), #val, __FILE__, __LINE__)
+#define CHECK_CUSPARSE_ERROR(val)   checkCUSPARSE((val), #val, __FILE__, __LINE__)
 #define CHECK_CUDA_ERROR(val)   check((val), #val, __FILE__, __LINE__)
 #define CHECK_LAST_CUDA_ERROR() checkLast(__FILE__, __LINE__)
 
 void checkCUBLAS(cublasStatus_t err, const char* const func, const char* const file, const int line);
+void checkCUSPARSE(cusparseStatus_t err, const char* const func, const char* const file, const int line);
 void check(cudaError err, const char* const func, const char* const file, const int line);
 void checkLast(const char* const file, const int line);
 
