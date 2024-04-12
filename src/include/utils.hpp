@@ -4,6 +4,7 @@
 #include <iostream>
 #include <string>
 #include <fstream>
+#include <cstdlib>
 
 #include "cxxopts.hpp"
 #include "input_parser.hpp"
@@ -132,8 +133,12 @@ void parse_input_args(const int argc, const char *const *argv, uint32_t *d, size
       exit(EXIT_INVALID_INFILE);
     }
   } else {
-    *input = new InputParser<DATA_TYPE>(cin, *d, *n);
+    // If no input file given, generate random using seed 
+    if (seed==NULL) // if we didn't pass a seed, just set it to random seed to avoid dereferencing nullptr 
+        **seed = std::rand();
+    *input = new InputParser<DATA_TYPE>(**seed, *d, *n);
   }
 }
+
 
 #endif

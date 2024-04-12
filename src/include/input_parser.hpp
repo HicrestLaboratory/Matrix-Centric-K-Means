@@ -3,6 +3,7 @@
 
 #include <string.h>
 #include "point.hpp"
+#include <random>
 
 #define SEPARATOR ","
 #define MAX_LINE   8192
@@ -27,7 +28,6 @@ class InputParser {
       for (size_t i = 0; i <= _n; i++) {
         char str[MAX_LINE] = { 0 };
         in >> str;
-        // printf("%s,\n", str);
 
         if (i == (size_t)0) { continue; }
         if (!str[0]) { break; }
@@ -43,6 +43,27 @@ class InputParser {
       }
 
       delete[] point;
+    }
+
+
+    /* Generate random data according to seed */
+    InputParser(int seed, int _d, size_t _n):
+        n(_n), d(_d), dataset(new Point<T>*[_n])
+    {
+        
+        std::mt19937 eng(seed);
+        std::uniform_real_distribution<float> distr(-1e5, 1e5);
+
+        T * point = new T[d];
+        for (size_t i=0; i<n; i++) {
+            for (int j=0; j<d; j++) {
+                point[j++] = distr(eng);
+            }
+            dataset[i] = new Point<T>(point, d);
+            memset(point, 0, sizeof(T)*d);
+        }
+
+        delete[] point;
     }
 
     ~InputParser() {
