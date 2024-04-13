@@ -71,7 +71,8 @@ int main(int argc, char **argv) {
   ofstream fout(out_file);
   input->dataset_to_csv(fout);
   fout.close();
-  delete seed;
+  if (seed!=NULL)
+      delete seed;
 
   return 0;
 }

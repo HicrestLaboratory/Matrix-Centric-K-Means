@@ -134,8 +134,10 @@ void parse_input_args(const int argc, const char *const *argv, uint32_t *d, size
     }
   } else {
     // If no input file given, generate random using seed 
-    if (seed==NULL) // if we didn't pass a seed, just set it to random seed to avoid dereferencing nullptr 
-        **seed = std::rand();
+    if (*seed==NULL) { // if we didn't pass a seed, just set it to random seed to avoid dereferencing nullptr 
+        auto rand_seed = std::rand();
+        *seed = &(rand_seed);
+    }
     *input = new InputParser<DATA_TYPE>(**seed, *d, *n);
   }
 }

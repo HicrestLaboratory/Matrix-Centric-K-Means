@@ -243,7 +243,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                             CUDA_R_32F));
 
     CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&P_descr,
-                                              n, d, n,
+                                              n, d, d,
                                               d_points,
                                               CUDA_R_32F,
                                               CUSPARSE_ORDER_ROW));
@@ -522,6 +522,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         compute_v_sparse<<<v_mat_grid_dim, v_mat_block_dim>>>(d_V_vals, d_V_rowinds, d_V_col_offsets, 
                                                               d_points_clusters, d_clusters_len,
                                                               n);
+
         
         compute_centroids_spmm(cusparseHandle,
                                 d, n, k,
@@ -532,9 +533,8 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 								V_descr,
 								P_descr,
                                 C_descr);
-                                
-                                                            
 
+        
 #else
         cerr<<"INVALID COMPUTE_CENTROIDS_KERNEL, GOT " <<COMPUTE_CENTROIDS_KERNEL<<" expected 0 or 1"<<endl;
         exit(1);

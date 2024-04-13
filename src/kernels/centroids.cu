@@ -158,10 +158,10 @@ __global__ void compute_v_sparse(DATA_TYPE * d_vals,
                                  const uint32_t * d_clusters_len,
                                  const uint32_t n) 
 {
-    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x; 
+    const int32_t tid = threadIdx.x + blockDim.x * blockIdx.x; 
     if (tid<n) {
         d_vals[tid] = ((DATA_TYPE) 1) / (DATA_TYPE)(d_clusters_len[d_points_clusters[tid]]);
-        d_rowinds[tid] = d_points_clusters[tid];
+        d_rowinds[tid] = (int32_t)d_points_clusters[tid];
         d_col_offsets[tid] = tid;
     }
     d_col_offsets[n] = n; //This might be horrible
@@ -181,8 +181,6 @@ void compute_centroids_spmm(cusparseHandle_t& handle,
 
 
     CHECK_CUSPARSE_ERROR(cusparseCscSetPointers(V_descr, (void*)d_V_col_offsets, (void*)d_V_rowinds, (void*)d_V_vals));
-    CHECK_CUSPARSE_ERROR(cusparseDnMatSetValues(C_descr, (void*)d_centroids));
-
     
     const DATA_TYPE alpha = 1.0;
     const DATA_TYPE beta = 0.0;
@@ -215,8 +213,11 @@ void compute_centroids_spmm(cusparseHandle_t& handle,
                                       CUDA_R_32F,
                                       CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
                                       d_buff));
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
     CHECK_CUSPARSE_ERROR(cusparseDnMatGetValues(C_descr, (void**)&d_centroids));
+
+    CHECK_CUDA_ERROR(cudaFree(d_buff));
 
     //TODO: Since we're allowed to have the output matrix in row-major form, we should probably change the stuff in
     // kmeans.cu to store d_centroids in row major form
