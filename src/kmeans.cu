@@ -146,7 +146,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     CHECK_CUBLAS_ERROR(cublasCreate(&cublasHandle));
 #endif
 
-#if COMPUTE_CENTROIDS_KERNEL==1
+#if COMPUTE_CENTROIDS_KERNEL==2
     cusparseHandle_t cusparseHandle;
     CHECK_CUSPARSE_ERROR(cusparseCreate(&cusparseHandle));
 #endif
@@ -215,10 +215,10 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     const uint32_t v_rows = k;
     const uint32_t v_cols = n;
     const uint32_t v_size = v_rows*v_cols;
-    /*
     DATA_TYPE * d_V;
     CHECK_CUDA_ERROR(cudaMalloc(&d_V, v_size*sizeof(DATA_TYPE)));
-    */
+
+#elif COMPUTE_CENTROIDS_KERNEL==2
 
     DATA_TYPE * d_V_vals;
     int32_t * d_V_rowinds;
@@ -320,7 +320,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         uint32_t c_mat_block_dim = min((size_t)deviceProps->maxThreadsPerBlock, c_rows/3);
         uint32_t c_rounds = ceil((float)(c_rows/3) / (float)(c_mat_block_dim));
 
-#if COMPUTE_CENTROIDS_KERNEL==1
+#if COMPUTE_CENTROIDS_KERNEL>=1
         compute_c_matrix_col_major<<<c_mat_grid_dim, c_mat_block_dim>>>(d_centroids, d_C, d, n, k, c_rounds);
 #else
         compute_c_matrix_row_major<<<c_mat_grid_dim, c_mat_block_dim>>>(d_centroids, d_C, d, n, k, c_rounds);
@@ -375,7 +375,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
             for (uint32_t ki = 0; ki < k; ++ki) {
                 DATA_TYPE dist = 0, tmp;
                 for (uint32_t di = 0; di < d; ++di) {
-#if COMPUTE_CENTROIDS_KERNEL==1
+#if COMPUTE_CENTROIDS_KERNEL>=1
                     tmp = h_points[ni * d + di] - h_centroids[ki + di*k];
 #else
                     tmp = h_points[ni * d + di] - h_centroids[ki * d + di];
@@ -501,9 +501,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                      n, d, k, i);
 		}
 #elif COMPUTE_CENTROIDS_KERNEL==1
-
-        // TODO: Make V sparse and replace this with cusparse spmm
-        /*
         const uint32_t v_mat_grid_dim = k;
         const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
         const uint32_t v_rounds = ceil((float)n / (float)v_mat_block_dim);
@@ -514,8 +511,8 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                 d, n, k,
                                 d_V, d_points,
                                 d_centroids);
-        */
 
+#elif COMPUTE_CENTROIDS_KERNEL==2
         const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
         const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
 
@@ -536,7 +533,8 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
         
 #else
-        cerr<<"INVALID COMPUTE_CENTROIDS_KERNEL, GOT " <<COMPUTE_CENTROIDS_KERNEL<<" expected 0 or 1"<<endl;
+        cerr<<"INVALID COMPUTE_CENTROIDS_KERNEL, GOT " <<
+            COMPUTE_CENTROIDS_KERNEL<<" expected 0, 1, or 2"<<endl;
         exit(1);
 #endif
 
@@ -596,7 +594,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         cout << endl << "CENTROIDS (GPU)" << endl;
         for (uint32_t i = 0; i < k; ++i) {
             for (uint32_t j = 0; j < d; ++j)
-#if COMPUTE_CENTROIDS_KERNEL==1
+#if COMPUTE_CENTROIDS_KERNEL>=1
                 printf("%.3f, ", h_centroids[i + j*k]);
 #else
                 printf("%.3f, ", h_centroids[i*d + j]);
@@ -624,7 +622,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 			converged = iter;
 			break;
 		}
-#elif COMPUTE_CENTROIDS_KERNEL==1
+#elif COMPUTE_CENTROIDS_KERNEL>=1
         // If we used gemm to compute the new centroids, they're in column major order
 		if (iter > 1 && cmp_centroids_col_maj()) {
 			converged = iter;
@@ -678,7 +676,8 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 #endif
 
 #if COMPUTE_CENTROIDS_KERNEL==1
-    //CHECK_CUDA_ERROR(cudaFree(d_V));
+    CHECK_CUDA_ERROR(cudaFree(d_V));
+#elif COMPUTE_CENTROIDS_KERNEL==2
     CHECK_CUDA_ERROR(cudaFree(d_V_vals));
     CHECK_CUDA_ERROR(cudaFree(d_V_rowinds));
     CHECK_CUDA_ERROR(cudaFree(d_V_col_offsets));

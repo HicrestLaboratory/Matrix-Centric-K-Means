@@ -41,6 +41,7 @@ const int num_colors = sizeof(colors)/sizeof(uint32_t);
  * @brief
  * 0: compute_centroids_shfl
  * 1: compute_centroids_gemm
+ * 2: compute_centroids_spmm
  */
 #define COMPUTE_CENTROIDS_KERNEL 1
 
