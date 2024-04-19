@@ -651,6 +651,14 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     printMatrixRowMaj(h_centroids, k, d);
 #endif
 
+#if PROFILE_MEMORY
+    size_t total_mem, free_mem;
+    CHECK_CUDA_ERROR(cudaMemGetInfo(&free_mem, &total_mem));
+    size_t usage = (total_mem - free_mem)/1e6;
+    cout<<"MEMORY FOOTPRINT: "<<usage<<" MB"<<endl;
+
+#endif
+
 	/* COPY BACK RESULTS*/
 	CHECK_CUDA_ERROR(cudaMemcpy(h_points_clusters, d_points_clusters, n * sizeof(uint32_t), cudaMemcpyDeviceToHost));
 	CHECK_CUDA_ERROR(cudaDeviceSynchronize());
