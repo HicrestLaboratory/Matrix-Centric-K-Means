@@ -16,6 +16,8 @@ from cuml.cluster import KMeans
 
 import cudf
 
+n_iters = 10
+
 
 class Results:
 
@@ -55,22 +57,32 @@ def run_cuml_kmeans(args):
 
         # Warm up
         kmeans.fit(d_points)
+        
+        total_time = 0
 
         # Run Kmeans
-        stime = time.time()
-        kmeans.fit(d_points)
-        etime = time.time()
+        for _ in range(n_iters):
+            stime = time.time()
+            kmeans.fit(d_points)
+            etime = time.time()
+            total_time += (e_time - s_time)
         
-        print(f"Time: {etime - stime}s")
+        this_time = total_time / n_iters
+
+        print(f"Time: {this_time}s")
         
-        cuml_results.add_result(args.n, args.k, d, (etime - stime))
+        cuml_results.add_result(args.n, args.k, d, this_time)
 
     cuml_results.save(f"{args.fname}-n{args.n}-k{args.k}")
 
 
 def run_our_kmeans(args):
 
-    cmd = f"../build/src/bin/gpukmeans -n {args.n} -k {args.k} -m 2 -o test.out -s 1 " 
+    cmd = f"../build/src/bin/gpukmeans -n {args.n} -k {args.k} -m 2 -o test.out -s 1 --runs {n_iters} " 
+
+    # Add srun if using SLURM
+    if args.slurm:
+        cmd = "srun -G 1 -n 1 " + cmd
 
     d_vals = np.arange(2, args.dmax+1, 2)
     
@@ -113,11 +125,14 @@ def plot(args):
             results = pkl.load(file) 
             data_dict[version_name] = results.get_result_data("runtime")
 
-    colors = {"mtx-kmeans-2":"purple", "shuffle-kmeans":"teal", "cuml-kmeans":"lime",
-              "mtx-kmeans-spmm":"crimson"}
+    metadata = {"mtx-kmeans-2":("purple", "x"),
+                "shuffle-kmeans":("teal", "o"), 
+                "cuml-kmeans":("lime", "v"),
+                "mtx-kmeans-spmm":("crimson", "s")}
+    
     for version in data_dict.keys():
         plt.plot(np.arange(2, len(data_dict[version])*2+1, 2), data_dict[version], 
-                 label=version, markersize=7, marker='x', color=colors[version])
+                 label=version, markersize=7, marker=metadata[version][1], color=metadata[version][0])
 
     plt.xlabel("d")
     plt.ylabel("Runtime (s)")
@@ -136,6 +151,7 @@ if __name__=="__main__":
     parser.add_argument("--k", type=int)
     parser.add_argument("--dmax", type=int)
     parser.add_argument("--fname", type=str)
+    parser.add_argument("--slurm", action='store_true')
     
     parser.add_argument("--action", type=str)
     
