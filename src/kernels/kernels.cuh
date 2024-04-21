@@ -106,4 +106,23 @@ void compute_centroids_spmm(cusparseHandle_t& handle,
 void check_p_correctness(DATA_TYPE * P, DATA_TYPE * points, uint32_t n, uint32_t d);
 void check_c_correctness(DATA_TYPE * C, DATA_TYPE * centroids, uint32_t k, uint32_t d);
 
+
+void compute_row_norm_mtx(cublasHandle_t& handle,
+                        const uint32_t m, const uint32_t n, const uint32_t k,
+                        const DATA_TYPE * mtx,
+                        DATA_TYPE * d_norms,
+                        DATA_TYPE * norm_mtx);
+
+void compute_col_norm_mtx(cublasHandle_t& handle,
+                        const uint32_t m, const uint32_t n, const uint32_t k,
+                        const DATA_TYPE * mtx,
+                        DATA_TYPE * d_norms,
+                        DATA_TYPE * norm_mtx);
+
+void compute_gemm_distances_arizona(cublasHandle_t& handle,
+                                    const uint32_t d, const uint32_t n, const uint32_t k,
+                                    const DATA_TYPE * d_points, const DATA_TYPE * d_points_norms,
+                                    const DATA_TYPE * d_centroids, const DATA_TYPE * d_centroids_norms,
+                                    DATA_TYPE * d_distances);
+
 #endif

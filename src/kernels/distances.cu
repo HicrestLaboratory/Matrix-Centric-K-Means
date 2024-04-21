@@ -204,6 +204,9 @@ __global__ void compute_c_matrix_col_major(const DATA_TYPE * d_centroids,
 }
 
 
+
+
+
 DATA_TYPE* d_tmp = NULL; // https://docs.nvidia.com/cuda/cublas/index.html#cublas-t-gemm
 DATA_TYPE* h_distances = NULL;
 DATA_TYPE* h_tmp = NULL;
@@ -483,6 +486,120 @@ void check_c_correctness(DATA_TYPE * C, DATA_TYPE * centroids, uint32_t k, uint3
     }
     cout<<"C correctness passed!"<<endl;
 }
+
+
+/* This is col major */
+void compute_row_norm_mtx(cublasHandle_t& handle, 
+                        const uint32_t m, const uint32_t n, const uint32_t k, 
+                        const DATA_TYPE * mtx, 
+                        DATA_TYPE * d_norms,
+                        DATA_TYPE * norm_mtx)
+{
+    /* mtx is m*k (k*d) */
+    /* norm_mtx is n*m (n*k) */
+
+    for (uint32_t i=0; i<m; i++) {
+        CHECK_CUBLAS_ERROR(cublasSdot(handle,
+                                      k,
+                                      (mtx+(i)),
+                                      m,
+                                      (mtx+(i)),
+                                      m,
+                                      &(d_norms[i])));
+    }
+
+    for (uint32_t i=0; i<n; i++) {
+        CHECK_CUBLAS_ERROR(cublasScopy(handle,
+                                       m,
+                                       d_norms,
+                                       1,
+                                       (norm_mtx + i),
+                                       n));
+    }
+    
+
+}
+
+
+/* We assume mtx is stored in row major order */
+void compute_col_norm_mtx(cublasHandle_t& handle, 
+                        const uint32_t m, const uint32_t n, const uint32_t k, 
+                        const DATA_TYPE * mtx,
+                        DATA_TYPE * d_norms,
+                        DATA_TYPE * norm_mtx)
+{
+    /* mtx is m*k (n*d) */
+    /* norm_mtx is m*n (n*k) */
+
+    for (uint32_t i=0; i<m; i++) {
+        CHECK_CUBLAS_ERROR(cublasSdot(handle,
+                                      k,
+                                      (mtx+(i*k)),
+                                      1,
+                                      (mtx+(i*k)),
+                                      1,
+                                      &(d_norms[i])));
+    }
+
+    /* Copy norms into each col of norm_mtx, stored in col major order */
+    for (uint32_t i=0; i<n; i++) {
+        CHECK_CUBLAS_ERROR(cublasScopy(handle,
+                                       m,
+                                       d_norms,
+                                       1,
+                                       (norm_mtx + i*m),
+                                       1));
+    }
+
+}
+
+
+/* Use the formulation from benoit et al */
+void compute_gemm_distances_arizona(cublasHandle_t& handle,
+                                    const uint32_t d, const uint32_t n, const uint32_t k,
+                                    const DATA_TYPE * d_points, const DATA_TYPE * d_points_norms, 
+                                    const DATA_TYPE * d_centroids, const DATA_TYPE * d_centroids_norms, 
+                                    DATA_TYPE * d_distances)
+{
+    const DATA_TYPE alpha = -2.0;
+    const DATA_TYPE beta = 0.0;
+    
+    /* -2.0*P*C */
+    CHECK_CUBLAS_ERROR(cublasSgemm(handle,
+                                    CUBLAS_OP_T, CUBLAS_OP_T,
+                                    n, k, d,
+                                    &alpha,
+                                    d_points, d,
+                                    d_centroids, k,
+                                    &beta,
+                                    d_distances, n));
+
+    const DATA_TYPE alpha2 = 1.0;
+
+    /* D += (P_norm + C_norm) */
+    CHECK_CUBLAS_ERROR(cublasSaxpy(handle, n*k,
+                                   &alpha2,
+                                   d_centroids_norms, 
+                                   1,
+                                   d_distances, 
+                                   1));
+    CHECK_CUBLAS_ERROR(cublasSaxpy(handle, n*k,
+                                   &alpha2,
+                                   d_points_norms,
+                                   1,
+                                   d_distances,
+                                   1));
+
+}
+
+
+
+
+
+
+
+
+
 
 
 /*** END Matrix multiplication ***/

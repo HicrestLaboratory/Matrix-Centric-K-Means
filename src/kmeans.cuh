@@ -34,6 +34,7 @@ const int num_colors = sizeof(colors)/sizeof(uint32_t);
  * 1: compute_distances_shfl
  * 2: matrix multiplication
  * 3: matrix multiplication v2
+ * 4: arizona mtx multiplication
  */
 #define COMPUTE_DISTANCES_KERNEL 3
 
@@ -43,7 +44,7 @@ const int num_colors = sizeof(colors)/sizeof(uint32_t);
  * 1: compute_centroids_gemm
  * 2: compute_centroids_spmm
  */
-#define COMPUTE_CENTROIDS_KERNEL 1
+#define COMPUTE_CENTROIDS_KERNEL 2
 
 class Kmeans {
   private:
