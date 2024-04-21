@@ -249,10 +249,10 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                               CUSPARSE_ORDER_ROW));
 
     CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&C_descr,
-                                              k, d, k,
+                                              k, d, d,
                                               d_centroids,
                                               CUDA_R_32F,
-                                              CUSPARSE_ORDER_COL));
+                                              CUSPARSE_ORDER_ROW));
 
 #endif
 
@@ -320,7 +320,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         uint32_t c_mat_block_dim = min((size_t)deviceProps->maxThreadsPerBlock, c_rows/3);
         uint32_t c_rounds = ceil((float)(c_rows/3) / (float)(c_mat_block_dim));
 
-#if COMPUTE_CENTROIDS_KERNEL>=1
+#if COMPUTE_CENTROIDS_KERNEL==1
         compute_c_matrix_col_major<<<c_mat_grid_dim, c_mat_block_dim>>>(d_centroids, d_C, d, n, k, c_rounds);
 #else
         compute_c_matrix_row_major<<<c_mat_grid_dim, c_mat_block_dim>>>(d_centroids, d_C, d, n, k, c_rounds);
@@ -520,7 +520,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                                               d_points_clusters, d_clusters_len,
                                                               n);
 
-        
         compute_centroids_spmm(cusparseHandle,
                                 d, n, k,
                                 d_V_vals, 
@@ -622,7 +621,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 			converged = iter;
 			break;
 		}
-#elif COMPUTE_CENTROIDS_KERNEL>=1
+#elif COMPUTE_CENTROIDS_KERNEL==1
         // If we used gemm to compute the new centroids, they're in column major order
 		if (iter > 1 && cmp_centroids_col_maj()) {
 			converged = iter;
