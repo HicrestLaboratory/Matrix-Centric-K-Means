@@ -11,6 +11,7 @@ import numpy as np
 
 from dataclasses import dataclass
 from collections import defaultdict
+from collections import OrderedDict
 
 n_iters = 10
 
@@ -164,34 +165,60 @@ def plot_runtime(args):
 def plot_mem(args):
 
     filenames = os.listdir(f"./{args.platform}")
-    filenames = list(filter(lambda f: f"-n{args.n}-k{args.k}.pkl" in f, filenames))
+    filenames = list(filter(lambda f: f".pkl" in f, filenames))
     filenames = list(map(lambda f: f"./{args.platform}/{f}", filenames))
 
-    data_dict = defaultdict(lambda: []) 
+    print(filenames)
+
+    n_params = 3
+    param_inds = {"n=1000, k=10, d=64":0,
+                  "n=100000, k=1000, d=64":1,
+                  "n=100000, k=10000, d=64":2}
+
+    data_dict = defaultdict(lambda: [0]*3)  
     for filename in filenames:
         
         split = filename.split("-n")[0].split("/") 
+        
         version_name = split[2]
+        if version_name=="cuml-kmeans":
+            continue
+
+        params = "-n"+filename.split("-n")[1].split(".pkl")[0]
+        n = int(params.split("-n")[1].split("-k")[0])
+        k = int(params.split("-k")[1].split(".pkl")[0])
+        d = 64
+        params = f"n={n}, k={k}, d={d}"
         
         with open(filename, 'rb') as file:
             results = pkl.load(file) 
-            data_dict[version_name] = results.get_result_data("mem")
+            data_dict[version_name][param_inds[params]] = (results.get_result_data("mem")[-1])
+
 
     metadata = {"mtx-kmeans-2":("purple", "x"),
                 "shuffle-kmeans":("teal", "o"), 
                 "cuml-kmeans":("lime", "v"),
                 "mtx-kmeans-spmm":("crimson", "s")}
-    for version in data_dict.keys():
-        plt.plot(np.arange(2, len(data_dict[version])*2+1, 2), data_dict[version], 
-                 label=version, markersize=7, marker=metadata[version][1], color=metadata[version][0])
+    print(data_dict)
+    
+    ind = np.arange(len(data_dict["mtx-kmeans-2"]))
+    ind *= 2
+    width = 0.35
 
-    plt.xlabel("d")
+    offset = width
+    i = 0
+
+    for version in data_dict.keys():
+        plt.bar(ind - (offset) + i*(offset), data_dict[version], width, label=version,
+                 color=metadata[version][0])
+        i+=1
+
+    plt.xticks(ind, labels=param_inds, rotation=45)
     plt.ylabel("Memory Footprint (MB)")
-    plt.yscale("log")
-    plt.title(f"Memory Footprint of K-means Algorithms (n={args.n} k={args.k})")
+    plt.title(f"Memory Footprint of K-means Algorithms")
     plt.legend()
 
-    plt.savefig(f"./{args.platform}/kmeans-mem-n{args.n}-k{args.k}", bbox_inches='tight')
+    plt.savefig(f"./{args.platform}/kmeans-mem", bbox_inches='tight')
 
 
 
