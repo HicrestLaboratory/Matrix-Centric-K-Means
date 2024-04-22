@@ -15,6 +15,11 @@ from collections import OrderedDict
 
 n_iters = 10
 
+metadata = {"mtx-kmeans-2":("purple", "x"),
+            "shuffle-kmeans":("teal", "o"), 
+            "cuml-kmeans":("lime", "v"),
+            "mtx-kmeans-spmm":("crimson", "s"),
+            "mtx-kmeans-arizona":("orange", "^")}
 
 class Results:
 
@@ -144,10 +149,6 @@ def plot_runtime(args):
             results = pkl.load(file) 
             data_dict[version_name] = results.get_result_data("runtime")
 
-    metadata = {"mtx-kmeans-2":("purple", "x"),
-                "shuffle-kmeans":("teal", "o"), 
-                "cuml-kmeans":("lime", "v"),
-                "mtx-kmeans-spmm":("crimson", "s")}
     
     for version in data_dict.keys():
         plt.plot(np.arange(2, len(data_dict[version])*2+1, 2), data_dict[version], 
@@ -191,14 +192,10 @@ def plot_mem(args):
         params = f"n={n}, k={k}, d={d}"
         
         with open(filename, 'rb') as file:
-            results = pkl.load(file) 
+            results = pkl.load(file)
             data_dict[version_name][param_inds[params]] = (results.get_result_data("mem")[-1])
 
 
-    metadata = {"mtx-kmeans-2":("purple", "x"),
-                "shuffle-kmeans":("teal", "o"), 
-                "cuml-kmeans":("lime", "v"),
-                "mtx-kmeans-spmm":("crimson", "s")}
     print(data_dict)
     
     ind = np.arange(len(data_dict["mtx-kmeans-2"]))
