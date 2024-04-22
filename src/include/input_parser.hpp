@@ -56,11 +56,12 @@ class InputParser {
 
         T * point = new T[d];
         for (size_t i=0; i<n; i++) {
+
             for (int j=0; j<d; j++) {
-                point[j++] = distr(eng);
+                point[j] = distr(eng);
             }
             dataset[i] = new Point<T>(point, d);
-            memset(point, 0, sizeof(T)*d);
+            //memset(point, 0, sizeof(T)*d);
         }
 
         delete[] point;

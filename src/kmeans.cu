@@ -101,7 +101,7 @@ void Kmeans::init_centroids (Point<DATA_TYPE>** points) {
 
 	for (size_t i = 0; i < k; ++i) {
 		for (size_t j = 0; j < d; ++j) {
-#if COMPUTE_CENTROIDS_KERNEL==1 
+#if COMPUTE_CENTROIDS_KERNEL==1 || COMPUTE_DISTANCES_KERNEL==4
             h_centroids[j * k + i] = centroids[i]->get(j); // col major needed here, since the output of the gemm centroids kernel is in column major order
 #else
 			h_centroids[i * d + j] = centroids[i]->get(j); // Row major
@@ -206,6 +206,20 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
     // Malloc C here, but don't initialize it yet 
     CHECK_CUDA_ERROR(cudaMalloc(&d_C, sizeof(DATA_TYPE)*c_rows*c_cols));
+#elif COMPUTE_DISTANCES_KERNEL==4
+
+    DATA_TYPE * d_points_norms;
+    DATA_TYPE * d_centroids_norms;
+
+    DATA_TYPE * d_points_row_norms;
+    DATA_TYPE * d_centroids_row_norms;
+
+    CHECK_CUDA_ERROR(cudaMalloc(&d_points_row_norms, sizeof(DATA_TYPE)*n));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_points_norms, sizeof(DATA_TYPE)*n*k));
+    compute_col_norm_mtx(cublasHandle, n, k, d, d_points, d_points_row_norms, d_points_norms);
+
+    CHECK_CUDA_ERROR(cudaMalloc(&d_centroids_norms, sizeof(DATA_TYPE)*n*k));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_centroids_row_norms, sizeof(DATA_TYPE)*k));
 
 #endif
 
@@ -249,10 +263,10 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                               CUSPARSE_ORDER_ROW));
 
     CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&C_descr,
-                                              k, d, k,
+                                              k, d, d,
                                               d_centroids,
                                               CUDA_R_32F,
-                                              CUSPARSE_ORDER_COL));
+                                              CUSPARSE_ORDER_ROW));
 
 #endif
 
@@ -320,7 +334,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         uint32_t c_mat_block_dim = min((size_t)deviceProps->maxThreadsPerBlock, c_rows/3);
         uint32_t c_rounds = ceil((float)(c_rows/3) / (float)(c_mat_block_dim));
 
-#if COMPUTE_CENTROIDS_KERNEL>=1
+#if COMPUTE_CENTROIDS_KERNEL==1
         compute_c_matrix_col_major<<<c_mat_grid_dim, c_mat_block_dim>>>(d_centroids, d_C, d, n, k, c_rounds);
 #else
         compute_c_matrix_row_major<<<c_mat_grid_dim, c_mat_block_dim>>>(d_centroids, d_C, d, n, k, c_rounds);
@@ -329,6 +343,16 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         compute_gemm_distances_fast(cublasHandle,
                                     d, n, k,
                                     d_P, d_C, d_distances);
+
+#elif COMPUTE_DISTANCES_KERNEL==4
+
+        compute_row_norm_mtx(cublasHandle, k, n, d, d_centroids, d_centroids_row_norms, d_centroids_norms);
+
+        compute_gemm_distances_arizona(cublasHandle, 
+                                      d, n, k,
+                                      d_points, d_points_norms,
+                                      d_centroids, d_centroids_norms,
+                                      d_distances);
 
 #endif
 
@@ -427,8 +451,8 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
 		CHECK_CUDA_ERROR(cudaMemset(d_clusters_len, 0, k * sizeof(uint32_t)));
 
-#if COMPUTE_DISTANCES_KERNEL==3
-        /* Distances are stored in column-major order if we used fast matrix-centric for distances */
+#if COMPUTE_DISTANCES_KERNEL>=3
+        /* Distances are stored in column-major order if we used fast matrix-centric or arizona for distances */
 		clusters_argmin_shfl<<<argmin_grid_dim, 
                                 argmin_block_dim, 
                                 argmin_sh_mem>>>
@@ -520,7 +544,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                                               d_points_clusters, d_clusters_len,
                                                               n);
 
-        
         compute_centroids_spmm(cusparseHandle,
                                 d, n, k,
                                 d_V_vals, 
@@ -622,7 +645,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 			converged = iter;
 			break;
 		}
-#elif COMPUTE_CENTROIDS_KERNEL>=1
+#elif COMPUTE_CENTROIDS_KERNEL==1 || COMPUTE_DISTANCES_KERNEL==4
         // If we used gemm to compute the new centroids, they're in column major order
 		if (iter > 1 && cmp_centroids_col_maj()) {
 			converged = iter;
@@ -680,6 +703,14 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
     CHECK_CUDA_ERROR(cudaFree(d_C));
     CHECK_CUDA_ERROR(cudaFree(d_P));
+
+#elif COMPUTE_DISTANCES_KERNEL==4
+
+    CHECK_CUDA_ERROR(cudaFree(d_centroids_row_norms));
+    CHECK_CUDA_ERROR(cudaFree(d_centroids_norms));
+
+    CHECK_CUDA_ERROR(cudaFree(d_points_row_norms));
+    CHECK_CUDA_ERROR(cudaFree(d_points_norms));
 
 #endif
 
