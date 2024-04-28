@@ -208,18 +208,16 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     CHECK_CUDA_ERROR(cudaMalloc(&d_C, sizeof(DATA_TYPE)*c_rows*c_cols));
 #elif COMPUTE_DISTANCES_KERNEL==4
 
-    DATA_TYPE * d_points_norms;
-    DATA_TYPE * d_centroids_norms;
-
     DATA_TYPE * d_points_row_norms;
     DATA_TYPE * d_centroids_row_norms;
 
     CHECK_CUDA_ERROR(cudaMalloc(&d_points_row_norms, sizeof(DATA_TYPE)*n));
-    CHECK_CUDA_ERROR(cudaMalloc(&d_points_norms, sizeof(DATA_TYPE)*n*k));
-    compute_col_norm_mtx(cublasHandle, n, k, d, d_points, d_points_row_norms, d_points_norms);
+    CHECK_CUDA_ERROR(cudaMalloc(&d_centroids_row_norms, sizeof(DATA_TYPE) * k));
 
-    CHECK_CUDA_ERROR(cudaMalloc(&d_centroids_norms, sizeof(DATA_TYPE)*n*k));
-    CHECK_CUDA_ERROR(cudaMalloc(&d_centroids_row_norms, sizeof(DATA_TYPE)*k));
+    for (uint32_t i = 0; i<ceil((float)d / (float)deviceProps->warpSize); i++) {
+        uint32_t pow_2_next = next_pow_2(d);
+        compute_norm_mtx<<<n, deviceProps->warpSize>>>(n, d, d_points, pow_2_next,  d_points_row_norms, i);
+    }
 
 #endif
 
@@ -346,12 +344,15 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
 #elif COMPUTE_DISTANCES_KERNEL==4
 
-        compute_row_norm_mtx(cublasHandle, k, n, d, d_centroids, d_centroids_row_norms, d_centroids_norms);
+        for (uint32_t i=0; i<ceil((float)d / (float)deviceProps->warpSize); i++) {
+            uint32_t pow_2_next = next_pow_2(d);
+            compute_norm_mtx<<<k, deviceProps->warpSize>>>(k, d, d_centroids, pow_2_next, d_centroids_row_norms, i);
+        }
 
         compute_gemm_distances_arizona(cublasHandle, 
                                       d, n, k,
-                                      d_points, d_points_norms,
-                                      d_centroids, d_centroids_norms,
+                                      d_points, d_points_row_norms,
+                                      d_centroids, d_centroids_row_norms,
                                       d_distances);
 
 #endif
@@ -363,7 +364,8 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
         float e_perf_dist_ms = 0;
         cudaEventElapsedTime(&e_perf_dist_ms, e_perf_dist_start, e_perf_dist_stop);
-        printf(CYAN "[PERFORMANCE]" RESET " compute_distances time: %.8f\n", e_perf_dist_ms / 1000);
+        if (iter>1)
+            printf(CYAN "[PERFORMANCE]" RESET " compute_distances time: %.8f\n", e_perf_dist_ms / 1000);
 
         cudaEventDestroy(e_perf_dist_start);
         cudaEventDestroy(e_perf_dist_stop);
@@ -705,13 +707,8 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     CHECK_CUDA_ERROR(cudaFree(d_P));
 
 #elif COMPUTE_DISTANCES_KERNEL==4
-
     CHECK_CUDA_ERROR(cudaFree(d_centroids_row_norms));
-    CHECK_CUDA_ERROR(cudaFree(d_centroids_norms));
-
     CHECK_CUDA_ERROR(cudaFree(d_points_row_norms));
-    CHECK_CUDA_ERROR(cudaFree(d_points_norms));
-
 #endif
 
 #if COMPUTE_CENTROIDS_KERNEL==1

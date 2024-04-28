@@ -554,6 +554,56 @@ void compute_col_norm_mtx(cublasHandle_t& handle,
 }
 
 
+__global__ void compute_norm_mtx(const uint32_t m, const uint32_t n,  
+                                    const DATA_TYPE * mtx,
+                                    const uint32_t d_closest_2_pow_log2,
+                                    DATA_TYPE * d_norms,
+                                    const uint32_t round)
+{
+
+    const uint32_t col_idx = threadIdx.x + blockDim.x * round;
+    if (col_idx < n) {
+        DATA_TYPE elem = mtx[blockIdx.x*n + col_idx];
+        elem *= elem;
+
+        for (uint32_t j=min(blockDim.x, d_closest_2_pow_log2) >> 1; j > 0; j >>=1) {
+            elem += __shfl_down_sync(DISTANCES_SHFL_MASK, elem, j);
+        }
+        
+
+        if (threadIdx.x==0) {
+            if (round==0)
+                d_norms[blockIdx.x] = elem;
+            else
+                d_norms[blockIdx.x] += elem;
+        }
+    }
+
+   
+}
+
+/* Add norm mtx (which is just an array of row-wise norms) to each row of mtx*/
+__global__ void add_norm_mtx_row(const uint32_t m, const uint32_t n,
+                             const DATA_TYPE * norm_mtx, DATA_TYPE * mtx)
+{
+    const uint32_t tid = threadIdx.x + (blockDim.x * blockIdx.x);
+    if (tid < m*n) {
+        const uint32_t norm_idx = (tid % m);
+        mtx[tid] += norm_mtx[norm_idx];
+    }
+}
+
+/* Same as above, but add to each column of mtx */
+__global__ void add_norm_mtx_col(const uint32_t m, const uint32_t n,
+                             const DATA_TYPE * norm_mtx, DATA_TYPE * mtx)
+{
+    const uint32_t tid = threadIdx.x + (blockDim.x * blockIdx.x);
+    if (tid < m*n) {
+        const uint32_t norm_idx = (tid / m);
+        mtx[tid] += norm_mtx[norm_idx];
+    }
+}
+
 /* Use the formulation from benoit et al */
 void compute_gemm_distances_arizona(cublasHandle_t& handle,
                                     const uint32_t d, const uint32_t n, const uint32_t k,
@@ -566,29 +616,24 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
     
     /* -2.0*P*C */
     CHECK_CUBLAS_ERROR(cublasSgemm(handle,
-                                    CUBLAS_OP_T, CUBLAS_OP_T,
+                                    CUBLAS_OP_T, CUBLAS_OP_N,
                                     n, k, d,
                                     &alpha,
                                     d_points, d,
-                                    d_centroids, k,
+                                    d_centroids, d,
                                     &beta,
                                     d_distances, n));
 
-    const DATA_TYPE alpha2 = 1.0;
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
     /* D += (P_norm + C_norm) */
-    CHECK_CUBLAS_ERROR(cublasSaxpy(handle, n*k,
-                                   &alpha2,
-                                   d_centroids_norms, 
-                                   1,
-                                   d_distances, 
-                                   1));
-    CHECK_CUBLAS_ERROR(cublasSaxpy(handle, n*k,
-                                   &alpha2,
-                                   d_points_norms,
-                                   1,
-                                   d_distances,
-                                   1));
+    const uint32_t block_dim = min(n*k, 1024); //TODO Replace with device props max threads 
+    const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
+    add_norm_mtx_row<<<grid_dim, block_dim>>>(n, k, d_points_norms, d_distances);
+
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    add_norm_mtx_col<<<grid_dim, block_dim>>>(n, k, d_centroids_norms, d_distances);
 
 }
 

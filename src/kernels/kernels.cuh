@@ -119,6 +119,20 @@ void compute_col_norm_mtx(cublasHandle_t& handle,
                         DATA_TYPE * d_norms,
                         DATA_TYPE * norm_mtx);
 
+__global__ void compute_norm_mtx(const uint32_t m, const uint32_t n,  
+                                    const DATA_TYPE * mtx,
+                                    const uint32_t d_closest_2_pow_log2,
+                                    DATA_TYPE * d_norms,
+                                    const uint32_t round);
+
+
+__global__ void add_norm_mtx_row(const uint32_t m, const uint32_t n,
+                             const DATA_TYPE * norm_mtx, DATA_TYPE * mtx);
+
+
+__global__ void add_norm_mtx_col(const uint32_t m, const uint32_t n,
+                             const DATA_TYPE * norm_mtx, DATA_TYPE * mtx);
+
 void compute_gemm_distances_arizona(cublasHandle_t& handle,
                                     const uint32_t d, const uint32_t n, const uint32_t k,
                                     const DATA_TYPE * d_points, const DATA_TYPE * d_points_norms,

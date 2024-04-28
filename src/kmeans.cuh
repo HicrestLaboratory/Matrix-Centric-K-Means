@@ -36,7 +36,7 @@ const int num_colors = sizeof(colors)/sizeof(uint32_t);
  * 3: matrix multiplication v2
  * 4: arizona mtx multiplication
  */
-#define COMPUTE_DISTANCES_KERNEL 3
+#define COMPUTE_DISTANCES_KERNEL 4
 
 /**
  * @brief
