@@ -96,9 +96,9 @@ TEST_CASE("kernel_distances_matrix_arizona", "[kernel][distances]") { // FIXME d
 
 			if (TEST_DEBUG) {
 				printf("\nPOINTS %d:\n", n);
-				printMatrixColMajLimited(h_points, n, d, 10, 5);
+				printMatrixColMajLimited(h_points, n, d, 10, 10);
 				printf("\nCENTERS %d:\n", k);
-				printMatrixColMajLimited(h_centroids, k, d, 10, 5);
+				printMatrixColMajLimited(h_centroids, k, d, 10, 10);
 			}
 
 			DATA_TYPE* d_points;
@@ -107,19 +107,13 @@ TEST_CASE("kernel_distances_matrix_arizona", "[kernel][distances]") { // FIXME d
 
 			DATA_TYPE* d_centroids;
 			cudaMalloc(&d_centroids, k * d * sizeof(DATA_TYPE));
-			cudaMemcpy(d_centroids, h_centroids, k * d * sizeof(DATA_TYPE), cudaMemcpyHostToDevice);
+			cudaMemcpy(d_centroids, h_centroids_row_maj, k * d * sizeof(DATA_TYPE), cudaMemcpyHostToDevice);
 
-			DATA_TYPE * d_points_norms;
             DATA_TYPE * d_points_row_norms;
-			cudaMalloc(&d_points_norms, n*k*sizeof(DATA_TYPE));
             cudaMalloc(&d_points_row_norms, n*sizeof(DATA_TYPE));
-			cudaMemset(d_points_norms, 0, n*k*sizeof(DATA_TYPE));
 
-			DATA_TYPE * d_centroids_norms;
             DATA_TYPE * d_centroids_row_norms;
-	        cudaMalloc(&d_centroids_norms, n*k*sizeof(DATA_TYPE));
             cudaMalloc(&d_centroids_row_norms, k*sizeof(DATA_TYPE));
-            cudaMemset(d_centroids_norms, 0, n*k*sizeof(DATA_TYPE));
 
 			DATA_TYPE* d_distances;
 			cudaMalloc(&d_distances, n * k * sizeof(DATA_TYPE));
@@ -127,16 +121,53 @@ TEST_CASE("kernel_distances_matrix_arizona", "[kernel][distances]") { // FIXME d
 			cublasHandle_t cublasHandle;
 			cublasCreate(&cublasHandle);
 
-            compute_col_norm_mtx(cublasHandle, n, k, d, d_points, d_points_row_norms, d_points_norms);
-            compute_row_norm_mtx(cublasHandle, k, n, d, d_centroids, d_centroids_row_norms, d_centroids_norms);
+            for (uint32_t i = 0; i<(std::ceil((float)d / (float)WARP_SIZE)); i++) {
+                uint32_t pow_2_next = next_pow_2(d);
+                compute_norm_mtx<<<n, WARP_SIZE>>>(n, d, d_points, pow_2_next, d_points_row_norms, i);
+                compute_norm_mtx<<<k, WARP_SIZE>>>(k, d, d_centroids, pow_2_next, d_centroids_row_norms, i);
+            }
+
+            cudaDeviceSynchronize();
+
 
             compute_gemm_distances_arizona(cublasHandle,
                                             d, n, k,
-                                            d_points, d_points_norms,
-                                            d_centroids, d_centroids_norms,
+                                            d_points, d_points_row_norms,
+                                            d_centroids, d_centroids_row_norms,
                                             d_distances);
+            cudaDeviceSynchronize();
+			cudaMemcpy(h_distances, d_distances, n * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
             
             if (TEST_DEBUG) {
+                DATA_TYPE * h_norms_p = new DATA_TYPE[n];
+                DATA_TYPE * h_norms_c = new DATA_TYPE[k];
+
+                cudaMemcpy(h_norms_p, d_points_row_norms, sizeof(DATA_TYPE)*n, cudaMemcpyDeviceToHost);
+                cudaMemcpy(h_norms_c, d_centroids_row_norms, sizeof(DATA_TYPE)*k, cudaMemcpyDeviceToHost);
+                printf("NORM P\n");
+                printMatrixColMajLimited(h_norms_p, n, 1, 10, 10);
+                printf("NORM C\n");
+                printMatrixColMajLimited(h_norms_c, k, 1, 10, 10);
+
+
+                const DATA_TYPE alpha = -2.0;
+                const DATA_TYPE beta = 0.0;
+                
+                /* -2.0*P*C */
+                CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle,
+                                                CUBLAS_OP_T, CUBLAS_OP_N,
+                                                n, k, d,
+                                                &alpha,
+                                                d_points, d,
+                                                d_centroids, d,
+                                                &beta,
+                                                d_distances, n));
+                
+                DATA_TYPE * h_distances_tmp = new DATA_TYPE[n*k];
+                cudaMemcpy(h_distances_tmp, d_distances, sizeof(DATA_TYPE)*n*k, cudaMemcpyDeviceToHost);
+
+                printMatrixColMajLimited(h_distances_tmp, n, k, 10, 10);
+
                 /*
                 DATA_TYPE * h_P_debug = new DATA_TYPE[p_size];
                 cudaMemcpy(h_P_debug, d_P, p_size*sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
@@ -155,9 +186,6 @@ TEST_CASE("kernel_distances_matrix_arizona", "[kernel][distances]") { // FIXME d
                 */
             }
 	
-			// Test function compute_gemm_distances
-            cudaDeviceSynchronize();
-			cudaMemcpy(h_distances, d_distances, n * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
 
             if (TEST_DEBUG) {
                 std::cout<<"Computed distances"<<std::endl;
@@ -186,8 +214,6 @@ TEST_CASE("kernel_distances_matrix_arizona", "[kernel][distances]") { // FIXME d
 			cudaFree(d_points);
             cudaFree(d_centroids);
 			cudaFree(d_distances);
-			cudaFree(d_centroids_norms);
-			cudaFree(d_points_norms);
             cudaFree(d_points_row_norms);
             cudaFree(d_centroids_row_norms);
 		}
