@@ -134,21 +134,39 @@ def run_cuml_kmeans(args):
 
     cuml_results = Results()
 
-    if args.dmax:
-        d_vals = np.arange(2, args.dmax+1, 2)
-    else:
-        d_vals = [ args.d ]
+    if args.itervar=="d":
+        iter_var = np.arange(2, args.d+1, 2)
+        suffix = f"-n{args.n}-k{args.k}"
+    elif args.itervar=="n":
+        iter_var = np.arange(args.k, args.n+1, 1000)
+        suffix = f"-d{args.d}-k{args.k}"
+    elif args.itervar=="k":
+        iter_var = np.arange(2, args.k+1, 100)
+        suffix = f"-n{args.n}-d{args.d}"
 
-    for d in d_vals:
+    for var in iter_var:
 
-        print(f"Running cuml d={d}...")
+        if args.itervar=="d":
+            n = args.n
+            k = args.k
+            d = var
+        elif args.itervar=="n":
+            k = args.k
+            d = args.d
+            n = var
+        elif args.itervar=="k":
+            n = args.n
+            d = args.d
+            k = var
+
+        print(f"Running cuml n={n}, k={k}, d={d}")
 
         # Generate random data 
-        points = np.random.rand(args.n, d)
+        points = np.random.rand(n, d)
         d_points = cudf.DataFrame(points)
         
         # Init Kmeans
-        kmeans = KMeans(n_clusters=args.k, max_iter=2)
+        kmeans = KMeans(n_clusters=k, max_iter=2)
 
         # Warm up
         kmeans.fit(d_points)
@@ -167,9 +185,9 @@ def run_cuml_kmeans(args):
 
         print(f"Time: {this_time}s")
         
-        cuml_results.add_result(args.n, args.k, d, this_time, 0)
+        cuml_results.add_result(n, k, d, this_time, 0)
 
-    cuml_results.save(f"./{args.fname}-n{args.n}-k{args.k}")
+    cuml_results.save(f"./{args.fname}{suffix}")
 
 
 def run_our_kmeans(args):
