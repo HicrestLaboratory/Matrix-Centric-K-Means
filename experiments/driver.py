@@ -19,7 +19,7 @@ n_iters = 10
 metadata = {"mtx-kmeans-2":("purple", "x"),
             "shuffle-kmeans":("teal", "o"), 
             "cuml-kmeans":("lime", "v"),
-            "mtx-kmeans-batch":("crimson", "s"),
+            "mtx-kmeans-bulk":("crimson", "s"),
             "mtx-kmeans-norm":("orange", "^"),
             "pytorch":("black", "+")}
 
@@ -181,7 +181,7 @@ def run_cuml_kmeans(args):
             if i>0:
                 total_time += (etime - stime)
         
-        this_time = total_time / n_iters
+        this_time = total_time / (n_iters - 1)
 
         print(f"Time: {this_time}s")
         
@@ -299,11 +299,35 @@ def run_distances(args):
     distances_results.save(f"./distances-{args.fname}-n{args.n}-k{args.k}")
 
 
+def get_version_name(fpath):
+    if "cuml" in fpath:
+        return "cuml-kmeans"
+    elif "bulk" in fpath:
+        return "mtx-kmeans-bulk"
+    elif "norm" in fpath:
+        return "mtx-kmeans-norm"
+    elif "shuffle" in fpath:
+        return "shuffle-kmeans"
+
+
+def filter_files(args, filenames):
+
+    if args.itervar=="n":
+        filenames = list(filter(lambda f: f"-d{args.d}-k{args.k}.pkl" in f and "distances" not in f, filenames))
+    elif args.itervar=="k":
+        filenames = list(filter(lambda f: f"-n{args.n}-d{args.d}.pkl" in f and "distances" not in f, filenames))
+    elif args.itervar=="d":
+        filenames = list(filter(lambda f: f"-n{args.n}-k{args.k}.pkl" in f and "distances" not in f, filenames))
+    else:
+        raise Exception(f"Invalid itervar: {args.itervar}")
+
+    return filenames
+
 
 def plot_runtime(args):
 
     filenames = os.listdir(f"./{args.platform}")
-    filenames = list(filter(lambda f: f"-n{args.n}-k{args.k}.pkl" in f and "distances" not in f, filenames))
+    filenames = filter_files(args, filenames)
     filenames = list(map(lambda f: f"./{args.platform}/{f}", filenames))
     print(filenames)
 
@@ -311,25 +335,33 @@ def plot_runtime(args):
 
     for filename in filenames:
         
-        split = filename.split("-n")[0].split("/") 
-        version_name = split[2]
+        version_name = get_version_name(filename)
         
         with open(filename, 'rb') as file:
             results = pkl.load(file) 
             data_dict[version_name] = results.get_result_data("runtime")
+            inds = results.get_result_data(args.itervar)
 
     
     for version in data_dict.keys():
-        plt.plot(np.arange(2, len(data_dict[version])*2+1, 2), data_dict[version], 
-                 label=version, markersize=7, marker=metadata[version][1], color=metadata[version][0])
+        plt.plot(inds, data_dict[version], 
+                 label=version, markersize=4, marker=metadata[version][1], color=metadata[version][0])
 
-    plt.xlabel("d")
+    plt.xlabel(args.itervar)
     plt.ylabel("Runtime (s)")
     plt.yscale("log")
-    plt.title(f"Runtime of 2 Iterations of K-means (n={args.n} k={args.k})")
+
+    if args.itervar=="n":
+        title_suffix = f"(d={args.d} k={args.k})"
+    elif args.itervar=="k":
+        title_suffix = f"(d={args.d} n={args.n})"
+    elif args.itervar=="d":
+        title_suffix = f"(n={args.n} k={args.k})"
+    
+    plt.title(f"Runtime of 2 Iterations of K-means {title_suffix}")
     plt.legend()
 
-    plt.savefig(f"./{args.platform}/kmeans-n{args.n}-k{args.k}", bbox_inches='tight')
+    plt.savefig(f"./{args.platform}/kmeans-{title_suffix}", bbox_inches='tight')
 
 
 def plot_mem(args):
@@ -365,7 +397,7 @@ def plot_mem(args):
 
 
     
-    ind = np.arange(len(data_dict["mtx-kmeans-batch"]))
+    ind = np.arange(len(data_dict["mtx-kmeans-bulk"]))
     ind *= 2
     width = 0.35
 
@@ -399,7 +431,7 @@ def plot_distance_runtime(args):
             results = pkl.load(file) 
             data_dict[version] = results.get_result_data("runtime")
 
-    name_dict = {"mtx-kmeans-batch":"ours",
+    name_dict = {"mtx-kmeans-bulk":"ours",
                  "mtx-kmeans-norm":"norm",
                  "pytorch":"pytorch"}
 
