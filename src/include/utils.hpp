@@ -107,11 +107,13 @@ void parse_input_args(const int argc, const char *const *argv, uint32_t *d, size
     exit(0);
   }
 
+  const std::string def_outfile("None");
+
   *d        = getArg_u(args, ARG_DIM,      NULL);
   *n        = getArg_u(args, ARG_SAMPLES,  NULL);
   *k        = getArg_u(args, ARG_CLUSTERS, NULL);
   *maxiter  = getArg_u(args, ARG_MAXITER,  NULL);
-  out_file  = getArg_s(args, ARG_OUTFILE,  NULL);
+  out_file  = getArg_s(args, ARG_OUTFILE,  &def_outfile);
   *tol      = getArg_f(args, ARG_TOL,      &DEF_EPSILON);
   *runs     = getArg_u(args, ARG_RUNS,     &DEF_RUNS);
 

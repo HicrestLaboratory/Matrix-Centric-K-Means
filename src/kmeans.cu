@@ -34,17 +34,41 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
 		generator = new mt19937(rd());
 	}
 
+
 	CHECK_CUDA_ERROR(cudaHostAlloc(&h_points, POINTS_BYTES, cudaHostAllocDefault));
 	for (size_t i = 0; i < n; ++i) {
 		for (size_t j = 0; j < d; ++j) {
 			h_points[i * d + j] = _points[i]->get(j);
 		}
 	}
+
+	init_centroids(_points);
+
+#ifdef PERFORMANCES_MEMCPY
+        cudaEvent_t e_perf_memcpy_start, e_perf_memcpy_stop;
+
+        cudaEventCreate(&e_perf_memcpy_start);
+        cudaEventCreate(&e_perf_memcpy_stop);
+        cudaEventRecord(e_perf_memcpy_start);
+#endif
+
 	CHECK_CUDA_ERROR(cudaMalloc(&d_points, POINTS_BYTES));
 	CHECK_CUDA_ERROR(cudaMemcpy(d_points, h_points, POINTS_BYTES, cudaMemcpyHostToDevice));
 
-	init_centroids(_points);
 	CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, h_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
+
+#ifdef PERFORMANCES_MEMCPY
+
+        cudaEventRecord(e_perf_memcpy_stop);
+        cudaEventSynchronize(e_perf_memcpy_stop);
+
+        float e_perf_memcpy_ms = 0;
+        cudaEventElapsedTime(&e_perf_memcpy_ms, e_perf_memcpy_start, e_perf_memcpy_stop);
+        printf(CYAN "[PERFORMANCE]" RESET " memcpy time: %.8f\n", e_perf_memcpy_ms / 1000);
+
+        cudaEventDestroy(e_perf_memcpy_start);
+        cudaEventDestroy(e_perf_memcpy_stop);
+#endif
 }
 
 Kmeans::~Kmeans () {

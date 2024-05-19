@@ -47,14 +47,22 @@ int main(int argc, char **argv) {
 
   printf(BOLDBLUE);
   double tot_time = 0;
+  double init_time = 0;
+
+  const auto init_start = chrono::high_resolution_clock::now();
+  Kmeans kmeans(n, d, k, tol, seed, input->get_dataset(), &deviceProp);
+  const auto init_end = chrono::high_resolution_clock::now();
+
+  init_time += (chrono::duration_cast<chrono::duration<double>>(init_end - init_start)).count();
+
   for (uint32_t i = 0; i < runs; i++) {
-    Kmeans kmeans(n, d, k, tol, seed, input->get_dataset(), &deviceProp);
     const auto start = chrono::high_resolution_clock::now();
     uint64_t converged = kmeans.run(maxiter);
     const auto end = chrono::high_resolution_clock::now();
 
     const auto duration = chrono::duration_cast<chrono::duration<double>>(end - start);
-    tot_time += duration.count();
+    if (i>0) // First iteration is just a warmup
+        tot_time += duration.count();
 
     #if DEBUG_OUTPUT_INFO
       if (converged < maxiter)
@@ -65,12 +73,15 @@ int main(int argc, char **argv) {
     #endif
   }
 
-  printf("GPU_Kmeans: %lfs (%u runs)\n", tot_time / runs, runs);
+  printf("GPU_Kmeans: %lfs (%u runs)\n", tot_time / (runs-1), runs);
+  printf("Init_time: %lfs \n", init_time);
   printf(RESET);
 
-  ofstream fout(out_file);
-  input->dataset_to_csv(fout);
-  fout.close();
+  if (strcmp(out_file.c_str(), "None")!=0) {
+      ofstream fout(out_file);
+      input->dataset_to_csv(fout);
+      fout.close();
+  }
   delete seed;
 
   return 0;
