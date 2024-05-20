@@ -49,16 +49,19 @@ int main(int argc, char **argv) {
   double tot_time = 0;
   double init_time = 0;
 
-  const auto init_start = chrono::high_resolution_clock::now();
-  Kmeans kmeans(n, d, k, tol, seed, input->get_dataset(), &deviceProp);
-  const auto init_end = chrono::high_resolution_clock::now();
-
-  init_time += (chrono::duration_cast<chrono::duration<double>>(init_end - init_start)).count();
 
   for (uint32_t i = 0; i < runs; i++) {
+    const auto init_start = chrono::high_resolution_clock::now();
+    Kmeans kmeans(n, d, k, tol, seed, input->get_dataset(), &deviceProp);
+    const auto init_end = chrono::high_resolution_clock::now();
+
+    if (i>0)
+        init_time += (chrono::duration_cast<chrono::duration<double>>(init_end - init_start)).count();
+
     const auto start = chrono::high_resolution_clock::now();
     uint64_t converged = kmeans.run(maxiter);
     const auto end = chrono::high_resolution_clock::now();
+
 
     const auto duration = chrono::duration_cast<chrono::duration<double>>(end - start);
     if (i>0) // First iteration is just a warmup
@@ -74,7 +77,7 @@ int main(int argc, char **argv) {
   }
 
   printf("GPU_Kmeans: %lfs (%u runs)\n", tot_time / (runs-1), runs);
-  printf("Init_time: %lfs \n", init_time);
+  printf("Init_time: %lfs \n", init_time / (runs-1));
   printf(RESET);
 
   if (strcmp(out_file.c_str(), "None")!=0) {

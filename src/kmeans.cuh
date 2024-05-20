@@ -47,34 +47,16 @@ const int num_colors = sizeof(colors)/sizeof(uint32_t);
 #define COMPUTE_CENTROIDS_KERNEL 2
 
 class Kmeans {
-  private:
-    const size_t n;
-    const uint32_t d, k;
-    const float tol;
-    const uint64_t POINTS_BYTES;
-    uint64_t CENTROIDS_BYTES;
-    Point<DATA_TYPE>** points;
-    mt19937* generator;
-
-    DATA_TYPE* h_points;
-    DATA_TYPE* h_centroids;
-    DATA_TYPE* h_last_centroids;
-    DATA_TYPE* h_centroids_matrix;
-    uint32_t*  h_points_clusters;
-    DATA_TYPE* d_points;
-    DATA_TYPE* d_centroids;
-
-    cudaDeviceProp* deviceProps;
-
-    /**
-     * @brief Select k random centroids sampled form points
-     */
-    void init_centroids(Point<DATA_TYPE>** points);
-    bool cmp_centroids();
-    bool cmp_centroids_col_maj();
-
   public:
-    Kmeans(const size_t n, const uint32_t d, const uint32_t k, const float tol, const int *seed, Point<DATA_TYPE>** points, cudaDeviceProp* deviceProps);
+
+    enum class InitMethod
+    {
+        random,
+        kmeans_plus_plus
+    };
+
+    Kmeans(const size_t n, const uint32_t d, const uint32_t k, const float tol, const int *seed, Point<DATA_TYPE>** points, cudaDeviceProp* deviceProps,
+            InitMethod _initMethod=InitMethod::random);
     ~Kmeans();
 
     /**
@@ -85,6 +67,38 @@ class Kmeans {
      * @return maxiter if did not converge
      */
     uint64_t run(uint64_t maxiter);
+
+  private:
+    const size_t n;
+    const uint32_t d, k;
+    const float tol;
+    const uint64_t POINTS_BYTES;
+    uint64_t CENTROIDS_BYTES;
+    Point<DATA_TYPE>** points;
+    InitMethod initMethod;
+    mt19937* generator;
+
+    DATA_TYPE* h_points;
+    DATA_TYPE* h_centroids;
+    DATA_TYPE* h_last_centroids;
+    DATA_TYPE * d_last_centroids;
+    DATA_TYPE* h_centroids_matrix;
+    uint32_t*  h_points_clusters;
+    DATA_TYPE* d_points;
+    DATA_TYPE* d_centroids;
+
+    cudaDeviceProp* deviceProps;
+
+    /**
+     * @brief Select k random centroids sampled form points
+     */
+    void init_centroids_rand(Point<DATA_TYPE>** points);
+    void init_centroids_plusplus(Point<DATA_TYPE>** points);
+    bool cmp_centroids();
+    bool cmp_centroids_col_maj();
+
+
+
 };
 
 #endif

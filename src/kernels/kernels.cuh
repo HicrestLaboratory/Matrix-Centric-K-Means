@@ -139,4 +139,15 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
                                     const DATA_TYPE * d_centroids, const DATA_TYPE * d_centroids_norms,
                                     DATA_TYPE * d_distances);
 
+
+
+__global__ void check_convergence( const DATA_TYPE * d_centroids,
+                                    const DATA_TYPE * d_last_centroids,
+                                    const uint32_t d,
+                                    const uint32_t k,
+                                    const uint32_t next_pow_of2,
+                                    const DATA_TYPE tol,
+                                    bool is_row_maj,
+                                    int * result);
+
 #endif

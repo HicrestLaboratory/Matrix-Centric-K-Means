@@ -18,12 +18,15 @@ using namespace std;
 
 const DATA_TYPE INFNTY = numeric_limits<DATA_TYPE>::infinity();
 
-Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const float _tol, const int* seed, Point<DATA_TYPE>** _points, cudaDeviceProp* _deviceProps)
+Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const float _tol, const int* seed, Point<DATA_TYPE>** _points, cudaDeviceProp* _deviceProps,
+                const InitMethod _initMethod)
 		: n(_n), d(_d), k(_k), tol(_tol),
 		POINTS_BYTES(_n * _d * sizeof(DATA_TYPE)),
 		CENTROIDS_BYTES(_k * _d * sizeof(DATA_TYPE)),
 		points(_points),
-		deviceProps(_deviceProps) {
+		deviceProps(_deviceProps),
+        initMethod(_initMethod)
+{
 
 	if (seed) {
 		seed_seq s{*seed};
@@ -42,14 +45,22 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
 		}
 	}
 
-	init_centroids(_points);
+    switch(initMethod)
+    {
+        case InitMethod::random:
+            init_centroids_rand(_points);
+            break;
+        case InitMethod::kmeans_plus_plus:
+            init_centroids_plusplus(_points);
+            break;
+    }
 
 #ifdef PERFORMANCES_MEMCPY
-        cudaEvent_t e_perf_memcpy_start, e_perf_memcpy_stop;
+    cudaEvent_t e_perf_memcpy_start, e_perf_memcpy_stop;
 
-        cudaEventCreate(&e_perf_memcpy_start);
-        cudaEventCreate(&e_perf_memcpy_stop);
-        cudaEventRecord(e_perf_memcpy_start);
+    cudaEventCreate(&e_perf_memcpy_start);
+    cudaEventCreate(&e_perf_memcpy_stop);
+    cudaEventRecord(e_perf_memcpy_start);
 #endif
 
 	CHECK_CUDA_ERROR(cudaMalloc(&d_points, POINTS_BYTES));
@@ -59,15 +70,15 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
 
 #ifdef PERFORMANCES_MEMCPY
 
-        cudaEventRecord(e_perf_memcpy_stop);
-        cudaEventSynchronize(e_perf_memcpy_stop);
+    cudaEventRecord(e_perf_memcpy_stop);
+    cudaEventSynchronize(e_perf_memcpy_stop);
 
-        float e_perf_memcpy_ms = 0;
-        cudaEventElapsedTime(&e_perf_memcpy_ms, e_perf_memcpy_start, e_perf_memcpy_stop);
-        printf(CYAN "[PERFORMANCE]" RESET " memcpy time: %.8f\n", e_perf_memcpy_ms / 1000);
+    float e_perf_memcpy_ms = 0;
+    cudaEventElapsedTime(&e_perf_memcpy_ms, e_perf_memcpy_start, e_perf_memcpy_stop);
+    printf(CYAN "[PERFORMANCE]" RESET " memcpy time: %.8f\n", e_perf_memcpy_ms / 1000);
 
-        cudaEventDestroy(e_perf_memcpy_start);
-        cudaEventDestroy(e_perf_memcpy_stop);
+    cudaEventDestroy(e_perf_memcpy_start);
+    cudaEventDestroy(e_perf_memcpy_stop);
 #endif
 }
 
@@ -85,7 +96,7 @@ Kmeans::~Kmeans () {
 	compute_gemm_distances_free();
 }
 
-void Kmeans::init_centroids (Point<DATA_TYPE>** points) {
+void Kmeans::init_centroids_rand (Point<DATA_TYPE>** points) {
 	uniform_int_distribution<int> random_int(0, n - 1);
 
 	if (COMPUTE_DISTANCES_KERNEL == 2) {
@@ -97,6 +108,7 @@ void Kmeans::init_centroids (Point<DATA_TYPE>** points) {
 
 	CHECK_CUDA_ERROR(cudaHostAlloc(&h_centroids, CENTROIDS_BYTES, cudaHostAllocDefault));
 	CHECK_CUDA_ERROR(cudaHostAlloc(&h_last_centroids, CENTROIDS_BYTES, cudaHostAllocDefault));
+    
 
 	unsigned int i = 0;
 	vector<Point<DATA_TYPE>*> usedPoints;
@@ -143,6 +155,12 @@ void Kmeans::init_centroids (Point<DATA_TYPE>** points) {
 
 	memcpy(h_last_centroids, h_centroids, CENTROIDS_BYTES);
 	CHECK_CUDA_ERROR(cudaMalloc(&d_centroids, CENTROIDS_BYTES));
+}
+
+
+void Kmeans::init_centroids_plusplus(Point<DATA_TYPE>** points)
+{
+
 }
 
 uint64_t Kmeans::run (uint64_t maxiter) {
@@ -667,16 +685,16 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         //TODO: Should probably move this to the GPU to avoid the memcpy above this
 		// Check exit
 #if COMPUTE_CENTROIDS_KERNEL==0
-		if (iter > 1 && cmp_centroids()) {
-			converged = iter;
-			break;
-		}
-#elif COMPUTE_CENTROIDS_KERNEL==1 || COMPUTE_DISTANCES_KERNEL==4
+        if (iter > 1 && cmp_centroids()) {
+            converged = iter;
+            break;
+        }
+#elif COMPUTE_CENTROIDS_KERNEL>=1 || COMPUTE_DISTANCES_KERNEL==4
         // If we used gemm to compute the new centroids, they're in column major order
-		if (iter > 1 && cmp_centroids_col_maj()) {
-			converged = iter;
-			break;
-		}
+        if (iter > 1 && cmp_centroids_col_maj()) {
+            converged = iter;
+            break;
+        }
 #endif
 
 		// Copy current centroids
