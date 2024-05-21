@@ -7,6 +7,7 @@ import os
 
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties
 import numpy as np
 
 
@@ -14,7 +15,8 @@ from dataclasses import dataclass
 from collections import defaultdict
 from collections import OrderedDict
 
-n_iters = 10
+from trial import Trial
+
 
 metadata = {"mtx-kmeans-2":("purple", "x"),
             "shuffle-kmeans":("teal", "o"), 
@@ -22,6 +24,82 @@ metadata = {"mtx-kmeans-2":("purple", "x"),
             "mtx-kmeans-bulk":("crimson", "s"),
             "mtx-kmeans-norm":("orange", "^"),
             "pytorch":("black", "+")}
+font = FontProperties()
+font.set_family("monospace")
+
+
+class KmeansTrial(Trial):
+
+    features = ["runtime", 
+                "dist_runtime",
+                "argmin_runtime",
+                "centroids_runtime",
+                "memcpy_runtime",
+                "d", "k", "n", 
+                "mem"]
+
+    def __init__(self):
+        super().__init__()
+
+    def parse_output(self, result):
+
+        output = result.stdout
+        args = result.args
+        print(args)
+
+        print(output)
+        
+        pattern = r"GPU_Kmeans: (\d+\.\d+)s"
+        match = re.search(pattern, output)
+        time = float(match.group(1))
+
+        pattern = r"MEMORY FOOTPRINT: (\d+) MB"
+        match = re.search(pattern, output)
+        mem = float(match.group(1))
+
+        pattern = r"time: (\d+\.\d+)"
+        match = re.findall(pattern, output)
+        memcpy_time = float(match[0])
+        argmin_time = float(match[1])
+        centroids_time = float(match[2])
+        dist_time = float(match[3])
+
+        pattern = r"-d (\d+)"
+        match = re.search(pattern, args)
+        d = int(match.group(1))
+
+        pattern = r"-k (\d+)"
+        match = re.search(pattern, args)
+        k = int(match.group(1))
+
+        pattern = r"-n (\d+)"
+        match = re.findall(pattern, args)
+        n = int(match[1])
+
+        return {"runtime":time,
+                "dist_runtime":dist_time,
+                "argmin_runtime":argmin_time,
+                "centroids_runtime":centroids_time,
+                "memcpy_runtime":memcpy_time,
+                "d":d, "k":k, "n":n,
+                "mem":mem
+                }
+
+
+class CuMLTrial(Trial):
+
+    features = ["runtime", 
+                "dist_runtime",
+                "argmin_runtime",
+                "centroids_runtime",
+                "memcpy_runtime",
+                "d", "k", "n", 
+                "mem"]
+
+    def __init__(self):
+        super().__init__()
+
+
 
 class Results:
 
@@ -69,13 +147,13 @@ def run_pytorch_dist(args):
         centroids = torch.tensor(np.random.rand(args.k, d)).to(device)
         
         total_time = 0
-        for _ in range(n_iters):
+        for _ in range(args.niters):
             stime = time.time()
             torch.cdist(points, centroids)
             etime = time.time()
             total_time += (etime - stime)
 
-        t = total_time / n_iters
+        t = total_time / args.niters
         print(f"Total time: {t}")
 
         pytorch_dist_results.add_result(args.n, args.k, d, t, 0)
@@ -109,13 +187,13 @@ def run_torch_kmeans(args):
         model = KMeans(n_clusters=args.k, max_iter=2)
 
         total_time = 0
-        for _ in range(n_iters):
+        for _ in range(args.niters):
             stime = time.time()
             model.fit(points)
             etime = time.time()
             total_time += (etime - stime)
 
-        t = total_time / n_iters
+        t = total_time / args.niters
         print(f"Total time: {t}")
 
         pytorch_kmeans_results.add_result(args.n, args.k, d, t, 0)
@@ -132,7 +210,7 @@ def run_cuml_kmeans(args):
 
     import cudf
 
-    cuml_results = Results()
+    trial_manager = CuMLTrial()
 
     if args.itervar=="d":
         iter_var = np.arange(2, args.d+1, 2)
@@ -141,8 +219,11 @@ def run_cuml_kmeans(args):
         iter_var = np.arange(args.k, args.n+1, 1000)
         suffix = f"-d{args.d}-k{args.k}"
     elif args.itervar=="k":
-        iter_var = np.arange(2, args.k+1, 100)
+        iter_var = np.arange(2, args.k+1, 10)
         suffix = f"-n{args.n}-d{args.d}"
+    else:
+        iter_var = [1]
+        suffix = f"-n{args.n}-d{args.d}-k{args.k}"
 
     for var in iter_var:
 
@@ -158,41 +239,59 @@ def run_cuml_kmeans(args):
             n = args.n
             d = args.d
             k = var
+        else:
+            n,d,k=args.n,args.d,args.k
 
         print(f"Running cuml n={n}, k={k}, d={d}")
 
         # Generate random data 
         points = np.random.rand(n, d)
         d_points = cudf.DataFrame(points)
+
+        memcpy_time = 0 
+        compute_time = 0
         
         # Init Kmeans
-        kmeans = KMeans(n_clusters=k, max_iter=2)
+        kmeans = KMeans(n_clusters=k, max_iter=2, verbose=6)
 
         # Warm up
         kmeans.fit(d_points)
-        
-        total_time = 0
 
         # Run Kmeans
-        for i in range(n_iters):
+        for i in range(args.niters):
+
+            stime = time.time()
+            d_points = cudf.DataFrame(points)
+            etime = time.time()
+
+            if i>0:
+                memcpy_time += (etime - stime)
+
             stime = time.time()
             kmeans.fit(d_points)
             etime = time.time()
+
             if i>0:
-                total_time += (etime - stime)
+                compute_time += (etime - stime)
         
-        this_time = total_time / (n_iters - 1)
+        compute_time = compute_time / (args.niters - 1)
+        memcpy_time = memcpy_time / (args.niters - 1)
 
-        print(f"Time: {this_time}s")
-        
-        cuml_results.add_result(n, k, d, this_time, 0)
+        print(f"Compute Time: {compute_time}s")
+        print(f"Memcpy Time: {memcpy_time}s")
 
-    cuml_results.save(f"./{args.fname}{suffix}")
+        trial_manager.add_sample({"memcpy_runtime":memcpy_time,
+                                  "runtime": compute_time,
+                                  "d":d, "n":n, "k":k}
+                                 )
+        print(trial_manager.df)
+
+    trial_manager.save(f"./{args.fname}{suffix}")
 
 
 def run_our_kmeans(args):
 
-    cmd = f"../build/src/bin/{args.bin}  -m 2 -o test.out -s 1 --runs {n_iters} " 
+    cmd = f"../build/src/bin/{args.bin}  -m 2  -s 1 --runs {args.niters} " 
 
     iter_var = [] 
     if args.itervar=="d":
@@ -215,8 +314,7 @@ def run_our_kmeans(args):
     if args.slurm:
         cmd = "srun -G 1 -n 1 " + cmd
 
-    our_results = Results()
-    distances_results = Results()
+    trial_manager = KmeansTrial()
     
     for var in iter_var:
 
@@ -238,35 +336,16 @@ def run_our_kmeans(args):
 
         print(f"Executing {cmd_curr}..")
 
-        result=subprocess.run(cmd_curr, shell=True, capture_output=True, text=True)
-        result.check_returncode()
+        trial_manager.run_trial(cmd_curr)
+        print(trial_manager.df)
 
-        print(result.stdout)
-        pattern = r"GPU_Kmeans: (\d+\.\d+)s"
-        match = re.search(pattern, result.stdout)
-        time = float(match.group(1))
 
-        
-        pattern = r"MEMORY FOOTPRINT: (\d+) MB"
-        match = re.search(pattern, result.stdout)
-        mem = float(match.group(1))
-
-        pattern = r"time: (\d+\.\d+)"
-        match = re.search(pattern, result.stdout)
-        dist_runtime = float(match.group(1))
-        print(dist_runtime)
-
-        print(f"Time: {time}s")
-        
-        our_results.add_result(n, k, d, time, mem)
-        distances_results.add_result(n, k, d, dist_runtime, 0)
-    
-    our_results.save(f"./{args.fname}{suffix}")
+    trial_manager.save(f"./{args.fname}{suffix}")
 
 
 def run_distances(args):
 
-    cmd = f"../build/src/bin/gpukmeans -n {args.n} -k {args.k} -m 2 -o test.out -s 1 --runs {n_iters} " 
+    cmd = f"../build/src/bin/gpukmeans -n {args.n} -k {args.k} -m 2  -s 1 --runs {args.niters} " 
 
     # Add srun if using SLURM
     if args.slurm:
@@ -295,6 +374,7 @@ def run_distances(args):
         dist_runtime = float(match.group(1))
         
         distances_results.add_result(args.n, args.k, d, dist_runtime, 0)
+        print(distances_results.df)
     
     distances_results.save(f"./distances-{args.fname}-n{args.n}-k{args.k}")
 
@@ -333,6 +413,11 @@ def plot_runtime(args):
 
     data_dict = defaultdict(lambda: []) 
 
+    if args.itervar=="d":
+        _markevery=1
+    else:
+        _markevery=4
+
     for filename in filenames:
         
         version_name = get_version_name(filename)
@@ -342,10 +427,12 @@ def plot_runtime(args):
             data_dict[version_name] = results.get_result_data("runtime")
             inds = results.get_result_data(args.itervar)
 
-    
+    hfont = {'fontname':'monospace'}
+
     for version in data_dict.keys():
         plt.plot(inds, data_dict[version], 
-                 label=version, markersize=4, marker=metadata[version][1], color=metadata[version][0])
+                 label=version, markersize=7, marker=metadata[version][1], color=metadata[version][0],
+                 markevery=_markevery)
 
     plt.xlabel(args.itervar)
     plt.ylabel("Runtime (s)")
@@ -358,7 +445,7 @@ def plot_runtime(args):
     elif args.itervar=="d":
         title_suffix = f"(n={args.n} k={args.k})"
     
-    plt.title(f"Runtime of 2 Iterations of K-means {title_suffix}")
+    plt.title(f"Runtime of 2 Iterations of K-means {title_suffix}", **hfont)
     plt.legend()
 
     plt.savefig(f"./{args.platform}/kmeans-{title_suffix}", bbox_inches='tight')
@@ -367,25 +454,34 @@ def plot_runtime(args):
 def plot_mem(args):
 
     filenames = os.listdir(f"./{args.platform}")
-    filenames = list(filter(lambda f: f".pkl" in f and "distance" not in f, filenames))
+    filenames = list(filter(lambda f: "-n1" in f and "-k1" in f and "distance" not in f, filenames))
     filenames = list(map(lambda f: f"./{args.platform}/{f}", filenames))
 
-    n_params = 3
+    print(filenames)
+
     param_inds = {"n=1000, k=10, d=64":0,
                   "n=100000, k=1000, d=64":1,
-                  "n=100000, k=10000, d=64":2}
+                  "n=100000, k=10000, d=64":2,
+                  "n=1000000, k=10000, d=64":3}
+    n_params = len(param_inds)
 
-    data_dict = defaultdict(lambda: [0]*3)  
+    data_dict = defaultdict(lambda: [0]*n_params)  
     for filename in filenames:
         
-        split = filename.split("-n")[0].split("/") 
         
-        version_name = split[2]
+        version_name = get_version_name(filename)
+
         if version_name=="cuml-kmeans":
             continue
 
-        params = "-n"+filename.split("-n")[1].split(".pkl")[0]
+
+        if version_name=="mtx-kmeans-norm":
+            params = "-n"+filename.split("-n")[2].split(".pkl")[0]
+        else:
+            params = "-n"+filename.split("-n")[1].split(".pkl")[0]
+
         n = int(params.split("-n")[1].split("-k")[0])
+
         k = int(params.split("-k")[1].split(".pkl")[0])
         d = 64
         params = f"n={n}, k={k}, d={d}"
@@ -412,6 +508,7 @@ def plot_mem(args):
     plt.xticks(ind, labels=param_inds, rotation=45)
     plt.ylabel("Memory Footprint (MB)")
     plt.title(f"Memory Footprint of K-means Algorithms")
+    plt.yscale("log")
     plt.legend()
 
     plt.savefig(f"./{args.platform}/kmeans-mem", bbox_inches='tight')
@@ -420,18 +517,19 @@ def plot_mem(args):
 def plot_distance_runtime(args):
     
     filenames = list(filter(lambda f: f"distances" in f and f"n{args.n}-k{args.k}" in f and ".png" not in f, os.listdir(f"./{args.platform}")))
+    print(filenames)
     
     data_dict = {}
 
     for filename in filenames:
         
-        version = filename.split("distances-")[1].split("-n")[0]
+        version = get_version_name(filename)
 
         with open(f"./{args.platform}/{filename}", 'rb') as file:
             results = pkl.load(file) 
             data_dict[version] = results.get_result_data("runtime")
 
-    name_dict = {"mtx-kmeans-bulk":"ours",
+    name_dict = {"mtx-kmeans-bulk":"bulk",
                  "mtx-kmeans-norm":"norm",
                  "pytorch":"pytorch"}
 
@@ -463,6 +561,8 @@ if __name__=="__main__":
     parser.add_argument("--platform", type=str)
     parser.add_argument("--itervar", type=str)
     parser.add_argument("--bin", type=str)
+    parser.add_argument("--niters", type=int, default=10)
+    parser.add_argument("--maxiters", type=int, default=2)
     
     args = parser.parse_args()
 
