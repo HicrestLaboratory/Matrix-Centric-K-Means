@@ -9,6 +9,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.font_manager import FontProperties
 import numpy as np
+import statistics as stats
 
 
 from dataclasses import dataclass
@@ -41,11 +42,17 @@ class KmeansTrial(Trial):
     def __init__(self):
         super().__init__()
 
+
+    def compute_time_avg(self, pattern, output):
+        match = re.findall(pattern, output)
+        avg_time = stats.mean(np.array([float(t) for t in match])) 
+        return avg_time
+
+
     def parse_output(self, result):
 
         output = result.stdout
         args = result.args
-        print(args)
 
         print(output)
         
@@ -57,12 +64,17 @@ class KmeansTrial(Trial):
         match = re.search(pattern, output)
         mem = float(match.group(1))
 
-        pattern = r"time: (\d+\.\d+)"
-        match = re.findall(pattern, output)
-        memcpy_time = float(match[0])
-        argmin_time = float(match[1])
-        centroids_time = float(match[2])
-        dist_time = float(match[3])
+        pattern = r"memcpy time: (\d+\.\d+)"
+        memcpy_time = self.compute_time_avg(pattern, output)
+
+        pattern = r"clusters_argmin_shfl time: (\d+\.\d+)"
+        argmin_time = self.compute_time_avg(pattern, output)
+
+        pattern = r"compute_centroids time: (\d+\.\d+)"
+        centroids_time = self.compute_time_avg(pattern, output)
+
+        pattern = r"compute_distances time: (\d+\.\d+)"
+        dist_time = self.compute_time_avg(pattern, output)
 
         pattern = r"-d (\d+)"
         match = re.search(pattern, args)
