@@ -406,8 +406,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
         float e_perf_dist_ms = 0;
         cudaEventElapsedTime(&e_perf_dist_ms, e_perf_dist_start, e_perf_dist_stop);
-        if (iter>1)
-            printf(CYAN "[PERFORMANCE]" RESET " compute_distances time: %.8f\n", e_perf_dist_ms / 1000);
+        printf(CYAN "[PERFORMANCE]" RESET " compute_distances time: %.8f\n", e_perf_dist_ms / 1000);
 
         cudaEventDestroy(e_perf_dist_start);
         cudaEventDestroy(e_perf_dist_stop);

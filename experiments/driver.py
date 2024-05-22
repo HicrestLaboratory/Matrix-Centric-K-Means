@@ -43,13 +43,21 @@ class KmeansTrial(Trial):
         super().__init__()
 
 
-    def compute_time_avg(self, pattern, output):
+    def compute_time_avg(self, pattern, output, n_trials):
+        
+        # Avoid warm-up
+        if "memcpy" in pattern:
+            start_idx = 1
+        else:
+            start_idx = 2 
+
         match = re.findall(pattern, output)
-        avg_time = stats.mean(np.array([float(t) for t in match])) 
+        s = sum([float(t) for t in match[start_idx:]])
+        avg_time = s / (n_trials - 1)
         return avg_time
 
 
-    def parse_output(self, result):
+    def parse_output(self, result, n_trials):
 
         output = result.stdout
         args = result.args
@@ -65,16 +73,16 @@ class KmeansTrial(Trial):
         mem = float(match.group(1))
 
         pattern = r"memcpy time: (\d+\.\d+)"
-        memcpy_time = self.compute_time_avg(pattern, output)
+        memcpy_time = self.compute_time_avg(pattern, output, n_trials)
 
         pattern = r"clusters_argmin_shfl time: (\d+\.\d+)"
-        argmin_time = self.compute_time_avg(pattern, output)
+        argmin_time = self.compute_time_avg(pattern, output, n_trials)
 
         pattern = r"compute_centroids time: (\d+\.\d+)"
-        centroids_time = self.compute_time_avg(pattern, output)
+        centroids_time = self.compute_time_avg(pattern, output, n_trials)
 
         pattern = r"compute_distances time: (\d+\.\d+)"
-        dist_time = self.compute_time_avg(pattern, output)
+        dist_time = self.compute_time_avg(pattern, output, n_trials)
 
         pattern = r"-d (\d+)"
         match = re.search(pattern, args)
@@ -159,13 +167,13 @@ def run_pytorch_dist(args):
         centroids = torch.tensor(np.random.rand(args.k, d)).to(device)
         
         total_time = 0
-        for _ in range(args.niters):
+        for _ in range(args.ntrials):
             stime = time.time()
             torch.cdist(points, centroids)
             etime = time.time()
             total_time += (etime - stime)
 
-        t = total_time / args.niters
+        t = total_time / args.ntrials
         print(f"Total time: {t}")
 
         pytorch_dist_results.add_result(args.n, args.k, d, t, 0)
@@ -199,13 +207,13 @@ def run_torch_kmeans(args):
         model = KMeans(n_clusters=args.k, max_iter=2)
 
         total_time = 0
-        for _ in range(args.niters):
+        for _ in range(args.ntrials):
             stime = time.time()
             model.fit(points)
             etime = time.time()
             total_time += (etime - stime)
 
-        t = total_time / args.niters
+        t = total_time / args.ntrials
         print(f"Total time: {t}")
 
         pytorch_kmeans_results.add_result(args.n, args.k, d, t, 0)
@@ -270,7 +278,7 @@ def run_cuml_kmeans(args):
         kmeans.fit(d_points)
 
         # Run Kmeans
-        for i in range(args.niters):
+        for i in range(args.ntrials):
 
             stime = time.time()
             d_points = cudf.DataFrame(points)
@@ -286,8 +294,8 @@ def run_cuml_kmeans(args):
             if i>0:
                 compute_time += (etime - stime)
         
-        compute_time = compute_time / (args.niters - 1)
-        memcpy_time = memcpy_time / (args.niters - 1)
+        compute_time = compute_time / (args.ntrials - 1)
+        memcpy_time = memcpy_time / (args.ntrials - 1)
 
         print(f"Compute Time: {compute_time}s")
         print(f"Memcpy Time: {memcpy_time}s")
@@ -303,7 +311,7 @@ def run_cuml_kmeans(args):
 
 def run_our_kmeans(args):
 
-    cmd = f"../build/src/bin/{args.bin}  -m 2  -s 1 --runs {args.niters} " 
+    cmd = f"../build/src/bin/{args.bin}  -m 2  -s 1 --runs {args.ntrials} " 
 
     iter_var = [] 
     if args.itervar=="d":
@@ -317,7 +325,7 @@ def run_our_kmeans(args):
         cmd += f"-d {args.d} "
         suffix = f"-d{args.d}-k{args.k}"
     elif args.itervar=="k":
-        iter_var = np.arange(2, args.k+1, 100)
+        iter_var = np.arange(2, args.k+1, 10)
         cmd += f"-n {args.n} "
         cmd += f"-d {args.d} "
         suffix = f"-n{args.n}-d{args.d}"
@@ -348,7 +356,7 @@ def run_our_kmeans(args):
 
         print(f"Executing {cmd_curr}..")
 
-        trial_manager.run_trial(cmd_curr)
+        trial_manager.run_trial(cmd_curr, args.ntrials)
         print(trial_manager.df)
 
 
@@ -357,7 +365,7 @@ def run_our_kmeans(args):
 
 def run_distances(args):
 
-    cmd = f"../build/src/bin/gpukmeans -n {args.n} -k {args.k} -m 2  -s 1 --runs {args.niters} " 
+    cmd = f"../build/src/bin/gpukmeans -n {args.n} -k {args.k} -m 2  -s 1 --runs {args.ntrials} " 
 
     # Add srun if using SLURM
     if args.slurm:
@@ -435,13 +443,14 @@ def plot_runtime(args):
         version_name = get_version_name(filename)
         
         with open(filename, 'rb') as file:
-            results = pkl.load(file) 
-            data_dict[version_name] = results.get_result_data("runtime")
-            inds = results.get_result_data(args.itervar)
-
-    hfont = {'fontname':'monospace'}
+            results = pd.read_csv(file) 
+            data_dict[version_name] = results
+            print(data_dict[version_name])
+            inds = results[args.itervar]
 
     for version in data_dict.keys():
+        bottom = np.zeros(len(inds))
+        #plt.bar(inds,
         plt.plot(inds, data_dict[version], 
                  label=version, markersize=7, marker=metadata[version][1], color=metadata[version][0],
                  markevery=_markevery)
@@ -573,7 +582,7 @@ if __name__=="__main__":
     parser.add_argument("--platform", type=str)
     parser.add_argument("--itervar", type=str)
     parser.add_argument("--bin", type=str)
-    parser.add_argument("--niters", type=int, default=10)
+    parser.add_argument("--ntrials", type=int, default=10)
     parser.add_argument("--maxiters", type=int, default=2)
     
     args = parser.parse_args()
