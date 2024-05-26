@@ -3,6 +3,7 @@
 #include <iomanip>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <cublas_v2.h>
 
 #include "include/common.h"
@@ -45,15 +46,6 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
 		}
 	}
 
-    switch(initMethod)
-    {
-        case InitMethod::random:
-            init_centroids_rand(_points);
-            break;
-        case InitMethod::kmeans_plus_plus:
-            init_centroids_plusplus(_points);
-            break;
-    }
 
 #ifdef PERFORMANCES_MEMCPY
     cudaEvent_t e_perf_memcpy_start, e_perf_memcpy_stop;
@@ -66,7 +58,6 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
 	CHECK_CUDA_ERROR(cudaMalloc(&d_points, POINTS_BYTES));
 	CHECK_CUDA_ERROR(cudaMemcpy(d_points, h_points, POINTS_BYTES, cudaMemcpyHostToDevice));
 
-	CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, h_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
 
 #ifdef PERFORMANCES_MEMCPY
 
@@ -111,20 +102,15 @@ void Kmeans::init_centroids_rand (Point<DATA_TYPE>** points) {
     
 
 	unsigned int i = 0;
-	vector<Point<DATA_TYPE>*> usedPoints;
+    map<int, bool> usedPoints;
 	Point<DATA_TYPE>* centroids[k];
 	while (i < k) {
-		Point<DATA_TYPE>* p = points[random_int(*generator)];
-		bool found = false;
-		for (auto p1 : usedPoints) {
-			if ((*p1) == (*p)) {
-				found = true;
-				break;
-			}
-		}
+        int point_idx = random_int(*generator);
+		Point<DATA_TYPE>* p = points[point_idx];
+		bool found = usedPoints.find(point_idx)!=usedPoints.end();
 		if (!found) {
 			centroids[i] = new Point<DATA_TYPE>(p);
-			usedPoints.push_back(p);
+			usedPoints.emplace(point_idx, true);
 			++i;
 		}
 	}
@@ -167,6 +153,44 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     uint64_t converged = maxiter;
 
     /* INIT */
+
+
+#if PERFORMANCES_CENTROIDS_INIT 
+
+    cudaEvent_t e_centroid_init_start, e_centroid_init_stop;
+
+    cudaEventCreate(&e_centroid_init_start);
+    cudaEventCreate(&e_centroid_init_stop);
+    cudaEventRecord(e_centroid_init_start);
+
+#endif
+
+    switch(initMethod)
+    {
+        case InitMethod::random:
+            init_centroids_rand(points);
+            break;
+        case InitMethod::kmeans_plus_plus:
+            init_centroids_plusplus(points);
+            break;
+    }
+	CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, h_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
+
+#if PERFORMANCES_CENTROIDS_INIT
+
+    cudaEventRecord(e_centroid_init_stop);
+    cudaEventSynchronize(e_centroid_init_stop);
+
+    float e_centroid_init_ms = 0;
+    cudaEventElapsedTime(&e_centroid_init_ms, e_centroid_init_start, e_centroid_init_stop);
+    printf(CYAN "[PERFORMANCE]" RESET " init_centroids time: %.8f\n", e_centroid_init_ms / 1000);
+
+    cudaEventDestroy(e_centroid_init_start);
+    cudaEventDestroy(e_centroid_init_stop);
+
+#endif
+
+
     DATA_TYPE* d_distances;
     CHECK_CUDA_ERROR(cudaMalloc(&d_distances, n * k * sizeof(DATA_TYPE)));
 
