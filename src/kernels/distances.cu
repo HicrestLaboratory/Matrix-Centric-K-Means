@@ -204,6 +204,31 @@ __global__ void compute_c_matrix_col_major(const DATA_TYPE * d_centroids,
 }
 
 
+__global__ void compute_c_vec(const DATA_TYPE * d_centroid,
+                              DATA_TYPE * d_c_vec,
+                              const uint32_t d)
+{
+
+    uint32_t centroid_idx = (threadIdx.x + blockDim.x*blockIdx.x);
+    if (centroid_idx < d) {
+        uint32_t c_vec_idx = centroid_idx * 3;
+        d_c_vec[c_vec_idx] = (DATA_TYPE)1;
+        d_c_vec[c_vec_idx + 1] = d_centroid[centroid_idx];
+        d_c_vec[c_vec_idx + 2] = d_centroid[centroid_idx]*d_centroid[centroid_idx];
+    }
+
+}
+
+
+__global__ void ewise_min(const DATA_TYPE * tmp,
+                          DATA_TYPE * buff,
+                          const uint32_t n)
+{
+    const uint32_t idx = threadIdx.x;
+    if (idx < n) {
+        buff[idx] = min(tmp[idx], buff[idx]);
+    }
+}
 
 
 

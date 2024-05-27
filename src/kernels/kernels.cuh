@@ -52,6 +52,16 @@ __global__ void compute_c_matrix_col_major(const DATA_TYPE * d_centroids,
                                             const uint32_t d, const uint32_t n, 
                                             const uint32_t k,const uint32_t rounds);
 
+
+__global__ void compute_c_vec(const DATA_TYPE * d_centroid,
+                              DATA_TYPE * d_c_vec,
+                              const uint32_t d);
+
+__global__ void ewise_min(const DATA_TYPE * tmp,
+                          DATA_TYPE * buff,
+                          const uint32_t n);
+
+
 void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp *deviceProps, 
     const uint32_t d1, const uint32_t n, const uint32_t k, 
      DATA_TYPE* d_P,  DATA_TYPE* d_C, DATA_TYPE* d_distances);
@@ -66,6 +76,8 @@ void compute_gemm_distances_free ();
 void compute_spgemm_distances (cublasHandle_t& handle, cudaDeviceProp *deviceProps, 
     const uint32_t d1, const uint32_t n, const uint32_t k, 
      DATA_TYPE* d_P,  DATA_TYPE* d_C, DATA_TYPE* d_distances) = delete;
+
+__global__ void clusters_argmin_cub(const DATA_TYPE* d_distances, const uint32_t n, const uint32_t k,  uint32_t* d_points_clusters, uint32_t* d_clusters_len);
 
 __global__ void clusters_argmin_shfl(const uint32_t n, const uint32_t k, DATA_TYPE* d_distances, uint32_t* points_clusters,  uint32_t* clusters_len, uint32_t warps_per_block, DATA_TYPE infty, bool is_row_major);
 

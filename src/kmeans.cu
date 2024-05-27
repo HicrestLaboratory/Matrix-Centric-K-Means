@@ -5,6 +5,7 @@
 #include <limits>
 #include <map>
 #include <cublas_v2.h>
+#include <cub/cub.cuh>
 
 #include "include/common.h"
 #include "include/colors.h"
@@ -140,19 +141,139 @@ void Kmeans::init_centroids_rand (Point<DATA_TYPE>** points) {
 #endif
 
 	memcpy(h_last_centroids, h_centroids, CENTROIDS_BYTES);
-	CHECK_CUDA_ERROR(cudaMalloc(&d_centroids, CENTROIDS_BYTES));
 }
 
 
-void Kmeans::init_centroids_plusplus(Point<DATA_TYPE>** points)
+void Kmeans::init_centroids_plusplus(DATA_TYPE * d_points)
 {
+    h_centroids_matrix = NULL;
+
+    uint32_t n_clusters = 0;
+    
+    /* Allocate host centroid buffers */
+	CHECK_CUDA_ERROR(cudaHostAlloc(&h_centroids, CENTROIDS_BYTES, cudaHostAllocDefault));
+	CHECK_CUDA_ERROR(cudaHostAlloc(&h_last_centroids, CENTROIDS_BYTES, cudaHostAllocDefault));
+
+
+    /* Choose first centroid uniformly at random */
+    uniform_int_distribution<int> rand_uniform(0, n-1);
+    int first_centroid_idx = rand_uniform(*generator);
+    DATA_TYPE * d_first_centroid = d_points + (d * first_centroid_idx);
+
+    /* Copy it to centroids matrix */
+    CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_first_centroid, 
+                                sizeof(DATA_TYPE)*d, cudaMemcpyDeviceToDevice));
+    n_clusters++;
+
+
+    /* Malloc points matrix and centroid vector */
+    DATA_TYPE * d_P;
+    DATA_TYPE * d_c_vec;
+    CHECK_CUDA_ERROR(cudaMalloc(&(d_P), n * 3 * d * sizeof(DATA_TYPE)));
+    CHECK_CUDA_ERROR(cudaMalloc(&(d_c_vec), 3 * d * sizeof(DATA_TYPE)));
+
+    /* Malloc tmp_distances and distances, init distances */
+    DATA_TYPE * tmp_dist;
+    DATA_TYPE * dist;
+    CHECK_CUDA_ERROR(cudaMalloc(&tmp_dist, sizeof(DATA_TYPE)*n));
+    CHECK_CUDA_ERROR(cudaMalloc(&dist, sizeof(DATA_TYPE)*n));
+
+
+    /* Initialize points matrix */
+    uint32_t p_mat_block_dim(min((size_t)deviceProps->maxThreadsPerBlock, n));
+    uint32_t p_mat_grid_dim(3*d);
+    uint32_t p_rounds = ceil((float)n / (float)p_mat_block_dim);
+
+    compute_p_matrix<<<p_mat_grid_dim, p_mat_block_dim>>>(d_points, d_P, d, n, k, p_rounds);
+
+
+    /* Initialize first c_vec using first chosen centroid */
+    uint32_t c_vec_block_dim = min((uint32_t)deviceProps->maxThreadsPerBlock, d);
+    uint32_t c_vec_grid_dim = ceil((float)d / (float)c_vec_block_dim) ;  
+
+    compute_c_vec<<<c_vec_grid_dim, c_vec_block_dim>>>(d_first_centroid, d_c_vec, d);
+
+    /* Call gemv to compute distances between all points and most recent centroid */
+    const DATA_TYPE alpha = 1.0;
+    const DATA_TYPE beta = 1.0;
+    CHECK_CUBLAS_ERROR(cublasSgemv(cublasHandle, CUBLAS_OP_N, 
+                                   n, 3*d,
+                                   &alpha,
+                                   d_P, n,
+                                   d_c_vec, 1,
+                                   &beta,
+                                   dist, 1));
+
+    /* Set up argmax */
+    cub::KeyValuePair<int32_t, DATA_TYPE> * d_argmax = nullptr;
+    uint32_t argmax_idx;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_argmax, sizeof(uint32_t)*2));
+
+    void * d_tmp_storage = nullptr;
+    size_t tmp_storage_bytes = 0;
+    cub::DeviceReduce::ArgMax(d_tmp_storage, tmp_storage_bytes,
+                                dist, d_argmax, n);
+    CHECK_CUDA_ERROR(cudaMalloc(&d_tmp_storage, tmp_storage_bytes));
+
+                                
+
+    while (n_clusters < k) {
+
+        /* Argmax to get next centroid */
+        cub::DeviceReduce::ArgMax(d_tmp_storage, tmp_storage_bytes,
+                                dist, d_argmax, n);
+        CHECK_CUDA_ERROR(cudaMemcpy(&argmax_idx, &(d_argmax->key), sizeof(uint32_t),
+                                    cudaMemcpyDeviceToHost));
+
+        DATA_TYPE * d_farthest_point = d_points + (d * argmax_idx);
+        DATA_TYPE * d_curr_centroid = d_centroids + (d * n_clusters);
+
+        CHECK_CUDA_ERROR(cudaMemcpy(d_curr_centroid, 
+                                    d_farthest_point,
+                                    sizeof(DATA_TYPE)*d,
+                                    cudaMemcpyDeviceToDevice));
+
+        /* Compute distances between points and previously chosen centroid */
+        compute_c_vec<<<c_vec_grid_dim, c_vec_block_dim>>>(d_curr_centroid, d_c_vec, d);
+        CHECK_CUBLAS_ERROR(cublasSgemv(cublasHandle, CUBLAS_OP_N, 
+                                       n, 3*d,
+                                       &alpha,
+                                       d_P, n,
+                                       d_c_vec, 1,
+                                       &beta,
+                                       tmp_dist, 1));
+
+        /* Update dist vector with new smallest distances */
+        const uint32_t ewise_block_dim = min(d, deviceProps->maxThreadsPerBlock);
+        const uint32_t ewise_grid_dim = ceil((float)d / (float)ewise_block_dim);
+        ewise_min<<<ewise_grid_dim, ewise_block_dim>>>(tmp_dist, dist, d);
+
+        n_clusters++;
+    }
+
+    // Copy centroids to host
+    CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, sizeof(DATA_TYPE)*d*k,
+                                cudaMemcpyDeviceToHost));
+
+    // Free  
+    CHECK_CUDA_ERROR(cudaFree(d_P));
+    CHECK_CUDA_ERROR(cudaFree(d_c_vec));
+    CHECK_CUDA_ERROR(cudaFree(tmp_dist));
+    CHECK_CUDA_ERROR(cudaFree(dist));
+    CHECK_CUDA_ERROR(cudaFree(d_tmp_storage));
+    CHECK_CUDA_ERROR(cudaFree(d_argmax));
+    
 
 }
 
 uint64_t Kmeans::run (uint64_t maxiter) {
     uint64_t converged = maxiter;
 
-    /* INIT */
+#if COMPUTE_DISTANCES_KERNEL>=2
+    CHECK_CUBLAS_ERROR(cublasCreate(&cublasHandle));
+#elif COMPUTE_CENTROIDS_KERNEL==1
+    CHECK_CUBLAS_ERROR(cublasCreate(&cublasHandle));
+#endif
 
 
 #if PERFORMANCES_CENTROIDS_INIT 
@@ -165,16 +286,19 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
 #endif
 
+	CHECK_CUDA_ERROR(cudaMalloc(&d_centroids, CENTROIDS_BYTES));
+
     switch(initMethod)
     {
         case InitMethod::random:
             init_centroids_rand(points);
+            CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, h_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
             break;
         case InitMethod::kmeans_plus_plus:
-            init_centroids_plusplus(points);
+            init_centroids_plusplus(d_points);
+            CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
             break;
     }
-	CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, h_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
 
 #if PERFORMANCES_CENTROIDS_INIT
 
@@ -204,13 +328,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     uint64_t iter = 0;
     const uint32_t rounds = ((d - 1) / deviceProps->warpSize) + 1;
 
-#if COMPUTE_DISTANCES_KERNEL>=2
-    cublasHandle_t cublasHandle;
-    CHECK_CUBLAS_ERROR(cublasCreate(&cublasHandle));
-#elif COMPUTE_CENTROIDS_KERNEL==1
-    cublasHandle_t cublasHandle;
-    CHECK_CUBLAS_ERROR(cublasCreate(&cublasHandle));
-#endif
 
 #if COMPUTE_CENTROIDS_KERNEL==2
     cusparseHandle_t cusparseHandle;
@@ -519,13 +636,20 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 		CHECK_CUDA_ERROR(cudaMemset(d_clusters_len, 0, k * sizeof(uint32_t)));
 
 #if COMPUTE_DISTANCES_KERNEL>=3
-        /* Distances are stored in column-major order if we used fast matrix-centric or arizona for distances */
+        /* Distances are stored in column-major order if we used fast matrix-centric or arizona for distances 
+                                 */
 		clusters_argmin_shfl<<<argmin_grid_dim, 
                                 argmin_block_dim, 
                                 argmin_sh_mem>>>
                                 (n, k, d_distances, d_points_clusters, 
                                  d_clusters_len, argmin_warps_per_block, INFNTY,
                                  false);
+        /*
+        clusters_argmin_cub<<<n, k>>>(d_distances,
+                                        n,k,
+                                        d_points_clusters,
+                                        d_clusters_len);
+                                        */
 #else
 		clusters_argmin_shfl<<<argmin_grid_dim, 
                                 argmin_block_dim, 
@@ -707,14 +831,14 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
         //TODO: Should probably move this to the GPU to avoid the memcpy above this
 		// Check exit
-#if COMPUTE_CENTROIDS_KERNEL==0
-        if (iter > 1 && cmp_centroids()) {
+#if COMPUTE_CENTROIDS_KERNEL==1 || COMPUTE_DISTANCES_KERNEL==4
+        // If we used gemm to compute the new centroids, they're in column major order
+        if (iter > 1 && cmp_centroids_col_maj()) {
             converged = iter;
             break;
         }
-#elif COMPUTE_CENTROIDS_KERNEL>=1 || COMPUTE_DISTANCES_KERNEL==4
-        // If we used gemm to compute the new centroids, they're in column major order
-        if (iter > 1 && cmp_centroids_col_maj()) {
+#else
+        if (iter > 1 && cmp_centroids()) {
             converged = iter;
             break;
         }
@@ -819,3 +943,23 @@ bool Kmeans::cmp_centroids_col_maj () {
 
 	return true;
 }
+
+
+float Kmeans::score() 
+{
+    float score = 0.0f;
+
+    for (int i=0; i<n; i++) {
+        uint32_t my_cluster = points[i]->getCluster();
+        for (int j=0; j<d; j++) {
+            float dist = (points[i]->get(j) - h_centroids[my_cluster + k*j]);
+            score += dist*dist;
+        }
+    }
+
+    return -1*score;
+}
+
+
+
+

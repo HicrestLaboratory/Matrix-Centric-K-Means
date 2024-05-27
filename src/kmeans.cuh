@@ -4,6 +4,7 @@
 #include <random>
 #include "include/common.h"
 #include "include/point.hpp"
+#include <cublas_v2.h>
 
 #ifdef NVTX
 #include "nvToolsExt.h"
@@ -33,8 +34,8 @@ const int num_colors = sizeof(colors)/sizeof(uint32_t);
  * 0: compute_distances_one_point_per_warp
  * 1: compute_distances_shfl
  * 2: matrix multiplication
- * 3: matrix multiplication v2
- * 4: arizona mtx multiplication
+ * 3: matrix multiplication bulk
+ * 4: matrix multiplication norm
  */
 #define COMPUTE_DISTANCES_KERNEL 3
 
@@ -68,6 +69,8 @@ class Kmeans {
      */
     uint64_t run(uint64_t maxiter);
 
+    float score();
+
   private:
     const size_t n;
     const uint32_t d, k;
@@ -89,11 +92,13 @@ class Kmeans {
 
     cudaDeviceProp* deviceProps;
 
+    cublasHandle_t cublasHandle;
+
     /**
      * @brief Select k random centroids sampled form points
      */
     void init_centroids_rand(Point<DATA_TYPE>** points);
-    void init_centroids_plusplus(Point<DATA_TYPE>** points);
+    void init_centroids_plusplus(DATA_TYPE * d_points);
     bool cmp_centroids();
     bool cmp_centroids_col_maj();
 

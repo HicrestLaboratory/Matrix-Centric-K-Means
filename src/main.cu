@@ -52,7 +52,8 @@ int main(int argc, char **argv) {
 
   for (uint32_t i = 0; i < runs; i++) {
     const auto init_start = chrono::high_resolution_clock::now();
-    Kmeans kmeans(n, d, k, tol, seed, input->get_dataset(), &deviceProp);
+    Kmeans kmeans(n, d, k, tol, seed, input->get_dataset(), &deviceProp,
+                    Kmeans::InitMethod::kmeans_plus_plus);
     const auto init_end = chrono::high_resolution_clock::now();
 
     if (i>0)
@@ -73,6 +74,7 @@ int main(int argc, char **argv) {
       else
         printf("K-means did NOT converge - ");
       printf("Time: %lf\n", duration.count());
+      printf("Score: %lf\n", kmeans.score());
     #endif
   }
 

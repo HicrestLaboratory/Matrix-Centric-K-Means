@@ -78,6 +78,7 @@ __global__ void clusters_argmin_shfl(const uint32_t n, const uint32_t k,
   }
 }
 
+
 /**
  * @brief This function uses the library CUB to perform the argmin for each point/centers
  *
@@ -88,31 +89,24 @@ __global__ void clusters_argmin_shfl(const uint32_t n, const uint32_t k,
  * @param d_points_clusters
  * @param h_clusters_len indicates how many point belog to each cluster
  */
-void clusters_argmin_cub(const DATA_TYPE* d_distances, const uint32_t n, const uint32_t k, uint32_t* h_points_clusters, uint32_t* d_points_clusters, uint64_t* h_clusters_len) {
-  memset(h_clusters_len, 0, k * sizeof(uint64_t));
-  for (size_t i = 0; i < n; i++) {
-    cub::KeyValuePair<int32_t, DATA_TYPE> *d_argmin = NULL;
-    CHECK_CUDA_ERROR(cudaMalloc(&d_argmin, sizeof(int32_t) + sizeof(DATA_TYPE)));
+__global__ void clusters_argmin_cub(const DATA_TYPE* d_distances, const uint32_t n, const uint32_t k,  uint32_t* d_points_clusters, uint32_t* d_clusters_len) {
+    int i = blockIdx.x;
+
+    typedef  cub::KeyValuePair<int32_t, DATA_TYPE> Pair;
+    typedef cub::BlockReduce<Pair, 1024> BlockReduce;
+    Pair d_argmin;
+    d_argmin.value = d_distances[i + (threadIdx.x*n)];
+    d_argmin.key = threadIdx.x;
+
+
     // Allocate temporary storage
-    void *d_temp_storage = NULL; size_t temp_storage_bytes = 0;
-    cub::DeviceReduce::ArgMin(d_temp_storage, temp_storage_bytes, d_distances, d_argmin, k);
-    CHECK_CUDA_ERROR(cudaMalloc(&d_temp_storage, temp_storage_bytes));
+    __shared__ typename BlockReduce::TempStorage temp_storage;
 
-    // Run argmin-reduction
-    cub::DeviceReduce::ArgMin(d_temp_storage, temp_storage_bytes, d_distances + i * k, d_argmin, k);
+    // Run reduction
+    d_argmin = BlockReduce(temp_storage).Reduce(d_argmin, cub::ArgMin());
 
-    int32_t argmin_idx;
-    DATA_TYPE argmin_val;
-    CHECK_CUDA_ERROR(cudaMemcpy(&argmin_idx, &(d_argmin->key), sizeof(int32_t), cudaMemcpyDeviceToHost));
-    CHECK_CUDA_ERROR(cudaMemcpy(&argmin_val, &(d_argmin->value), sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
-    CHECK_CUDA_ERROR(cudaFree(d_temp_storage));
-    CHECK_CUDA_ERROR(cudaFree(d_argmin));
-    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
-    ++h_clusters_len[argmin_idx];
-    h_points_clusters[i] = argmin_idx;
-  }
-  CHECK_CUDA_ERROR(cudaMemcpy(d_points_clusters, h_points_clusters, n * sizeof(uint32_t), cudaMemcpyHostToDevice));
+    atomicAdd(&d_clusters_len[d_argmin.key], 1);
+    d_points_clusters[i] = d_argmin.key;
 }
 
 void schedule_argmin_kernel(const cudaDeviceProp *props, const uint32_t n, const uint32_t k, dim3 *grid, dim3 *block, uint32_t *warps_per_block, uint32_t *sh_mem) {
