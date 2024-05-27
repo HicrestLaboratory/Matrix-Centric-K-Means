@@ -20,10 +20,10 @@ from trial import Trial
 
 
 metadata = {"mtx-kmeans-2":("purple", "x"),
-            "shuffle-kmeans":("teal", "o"), 
-            "cuml-kmeans":("lime", "v"),
-            "mtx-kmeans-bulk":("crimson", "s"),
-            "mtx-kmeans-norm":("orange", "^"),
+            "shuffle-kmeans":("teal", "o", "/"), 
+            "cuml-kmeans":("lime", "v", "."),
+            "mtx-kmeans-bulk":("crimson", "s", "x"),
+            "mtx-kmeans-norm":("orange", "^", "o"),
             "pytorch":("black", "+")}
 font = FontProperties()
 font.set_family("monospace")
@@ -37,7 +37,9 @@ class KmeansTrial(Trial):
                 "centroids_runtime",
                 "memcpy_runtime",
                 "d", "k", "n", 
-                "mem"]
+                "mem",
+                "name",
+                "score"]
 
     def __init__(self):
         super().__init__()
@@ -84,6 +86,10 @@ class KmeansTrial(Trial):
         pattern = r"compute_distances time: (\d+\.\d+)"
         dist_time = self.compute_time_avg(pattern, output, n_trials)
 
+        pattern = r"Score: \-(\d+\.\d+)"
+        match = re.search(pattern, output)
+        score = float(match.group(1))
+
         pattern = r"-d (\d+)"
         match = re.search(pattern, args)
         d = int(match.group(1))
@@ -102,7 +108,8 @@ class KmeansTrial(Trial):
                 "centroids_runtime":centroids_time,
                 "memcpy_runtime":memcpy_time,
                 "d":d, "k":k, "n":n,
-                "mem":mem
+                "mem":mem,
+                "score":score,
                 }
 
 
@@ -114,7 +121,9 @@ class CuMLTrial(Trial):
                 "centroids_runtime",
                 "memcpy_runtime",
                 "d", "k", "n", 
-                "mem"]
+                "mem",
+                "name",
+                "score"]
 
     def __init__(self):
         super().__init__()
@@ -239,7 +248,7 @@ def run_cuml_kmeans(args):
         iter_var = np.arange(args.k, args.n+1, 1000)
         suffix = f"-d{args.d}-k{args.k}"
     elif args.itervar=="k":
-        iter_var = np.arange(2, args.k+1, 10)
+        iter_var = np.arange(2, args.k+1, 100)
         suffix = f"-n{args.n}-d{args.d}"
     else:
         iter_var = [1]
@@ -265,14 +274,19 @@ def run_cuml_kmeans(args):
         print(f"Running cuml n={n}, k={k}, d={d}")
 
         # Generate random data 
-        points = np.random.rand(n, d)
+        if args.infile==None:
+            points = np.random.rand(n, d)
+        else:
+            points = pd.read_csv(args.infile)
+            n = points.shape[0]
+            d = points.shape[1]
         d_points = cudf.DataFrame(points)
 
         memcpy_time = 0 
         compute_time = 0
         
         # Init Kmeans
-        kmeans = KMeans(n_clusters=k, max_iter=2, verbose=6)
+        kmeans = KMeans(n_clusters=k, max_iter=args.maxiters, verbose=6)
 
         # Warm up
         kmeans.fit(d_points)
@@ -302,16 +316,85 @@ def run_cuml_kmeans(args):
 
         trial_manager.add_sample({"memcpy_runtime":memcpy_time,
                                   "runtime": compute_time,
-                                  "d":d, "n":n, "k":k}
+                                  "score": score,
+                                  "d":d, "n":n, "k":k,
+                                  "name":None}
                                  )
         print(trial_manager.df)
 
     trial_manager.save(f"./{args.fname}{suffix}")
 
 
+def run_cuml_kmeans_infile(args):
+    from cuml.cluster import KMeans
+
+    import cudf
+
+    trial_manager = CuMLTrial()
+
+    points = pd.read_csv(args.infile)
+
+    n = points.shape[0]
+    d = points.shape[1]
+    k_vec = np.arange(2, args.k, 100) 
+
+
+    print(f"Running cuml on {args.infile}, n={n} d={d}")
+
+    d_points = cudf.DataFrame(points)
+
+    memcpy_time = 0 
+    compute_time = 0
+    
+    # Init Kmeans
+    for k in k_vec:
+        kmeans = KMeans(n_clusters=k, max_iter=args.maxiters, verbose=6)
+
+        # Warm up
+        kmeans.fit(d_points)
+
+        # Run Kmeans
+        for i in range(args.ntrials):
+
+            stime = time.time()
+            d_points = cudf.DataFrame(points)
+            etime = time.time()
+
+            if (i > 0):
+                memcpy_time += (etime - stime)
+
+            stime = time.time()
+            kmeans.fit(d_points)
+            etime = time.time()
+
+            if (i > 0):
+                compute_time += (etime - stime)
+
+        compute_time /= (args.ntrials - 1)
+        memcpy_time /= (args.ntrials - 1)
+        score = kmeans.score(d_points)
+        
+        print(f"Compute Time: {compute_time}s")
+        print(f"Memcpy Time: {memcpy_time}s")
+        print(f"Score: {score}")
+
+        trial_manager.add_sample({"memcpy_runtime":memcpy_time,
+                                  "runtime": compute_time,
+                                  "score": score,
+                                  "d":d, "n":n, "k":k,
+                                  "name":args.infile}
+                                 )
+        print(trial_manager.df)
+
+    trial_manager.save(f"./{args.infile}-cuml")
+
+
+
 def run_our_kmeans(args):
 
-    cmd = f"../build/src/bin/{args.bin}  -m 2  -s 1 --runs {args.ntrials} " 
+    cmd = f"../build/src/bin/{args.bin}  -m {args.maxiters}  -s 1 --runs {args.ntrials}  -t 0.0001 " 
+    if args.infile:
+        cmd += f"{args.infile} "
 
     iter_var = [] 
     if args.itervar=="d":
@@ -325,7 +408,7 @@ def run_our_kmeans(args):
         cmd += f"-d {args.d} "
         suffix = f"-d{args.d}-k{args.k}"
     elif args.itervar=="k":
-        iter_var = np.arange(2, args.k+1, 10)
+        iter_var = np.arange(2, args.k+1, 100)
         cmd += f"-n {args.n} "
         cmd += f"-d {args.d} "
         suffix = f"-n{args.n}-d{args.d}"
@@ -361,6 +444,36 @@ def run_our_kmeans(args):
 
 
     trial_manager.save(f"./{args.fname}{suffix}")
+
+
+def run_our_kmeans_infile(args):
+
+    cmd = f"../build/src/bin/{args.bin}  -m {args.maxiters}  -s 1 --runs {args.ntrials}  -t 0.0001 -i {args.infile} " 
+
+    df = pd.read_csv(args.infile)
+    n = df.shape[0]
+    d = df.shape[1]
+    k_vec = np.arange(2, args.k, 100)
+
+    cmd += f"-n {n} -d {d} "
+
+    # Add srun if using SLURM
+    if args.slurm:
+        cmd = "srun -G 1 -n 1 " + cmd
+
+    trial_manager = KmeansTrial()
+    
+    for k in k_vec:
+
+        cmd_curr = cmd + f"-k {k} "
+
+        print(f"Executing {cmd_curr}..")
+
+        trial_manager.run_trial(cmd_curr, args.ntrials)
+        print(trial_manager.df)
+
+
+    trial_manager.save(f"./{args.infile}-{args.fname}")
 
 
 def run_distances(args):
@@ -413,11 +526,11 @@ def get_version_name(fpath):
 def filter_files(args, filenames):
 
     if args.itervar=="n":
-        filenames = list(filter(lambda f: f"-d{args.d}-k{args.k}.pkl" in f and "distances" not in f, filenames))
+        filenames = list(filter(lambda f: f"-d{args.d}-k{args.k}.csv" in f and "distances" not in f, filenames))
     elif args.itervar=="k":
-        filenames = list(filter(lambda f: f"-n{args.n}-d{args.d}.pkl" in f and "distances" not in f, filenames))
+        filenames = list(filter(lambda f: f"-n{args.n}-d{args.d}.csv" in f and "distances" not in f, filenames))
     elif args.itervar=="d":
-        filenames = list(filter(lambda f: f"-n{args.n}-k{args.k}.pkl" in f and "distances" not in f, filenames))
+        filenames = list(filter(lambda f: f"-n{args.n}-k{args.k}.csv" in f and "distances" not in f, filenames))
     else:
         raise Exception(f"Invalid itervar: {args.itervar}")
 
@@ -434,9 +547,9 @@ def plot_runtime(args):
     data_dict = defaultdict(lambda: []) 
 
     if args.itervar=="d":
-        _markevery=1
-    else:
         _markevery=4
+    else:
+        _markevery=10
 
     for filename in filenames:
         
@@ -444,16 +557,20 @@ def plot_runtime(args):
         
         with open(filename, 'rb') as file:
             results = pd.read_csv(file) 
-            data_dict[version_name] = results
+            data_dict[version_name] = results["runtime"][0::_markevery]
             print(data_dict[version_name])
-            inds = results[args.itervar]
+            inds = results[args.itervar][0::_markevery]
+
+
+    width = 0.35
+    offset = width
+    i = 0
 
     for version in data_dict.keys():
-        bottom = np.zeros(len(inds))
-        #plt.bar(inds,
-        plt.plot(inds, data_dict[version], 
-                 label=version, markersize=7, marker=metadata[version][1], color=metadata[version][0],
-                 markevery=_markevery)
+        plt.plot(inds, data_dict[version], label=version, marker=metadata[version][1],
+                 markersize=7,
+                 color=metadata[version][0])
+        i+=1
 
     plt.xlabel(args.itervar)
     plt.ylabel("Runtime (s)")
@@ -466,10 +583,78 @@ def plot_runtime(args):
     elif args.itervar=="d":
         title_suffix = f"(n={args.n} k={args.k})"
     
-    plt.title(f"Runtime of 2 Iterations of K-means {title_suffix}", **hfont)
+    plt.title(f"Runtime of 2 Iterations of K-means {title_suffix}")
     plt.legend()
 
     plt.savefig(f"./{args.platform}/kmeans-{title_suffix}", bbox_inches='tight')
+    plt.clf()
+
+
+def plot_breakdown(args):
+    filenames = os.listdir(f"./{args.platform}")
+    filenames = filter_files(args, filenames)
+    filenames = list(map(lambda f: f"./{args.platform}/{f}", filenames))
+    print(filenames)
+
+    data_dict = defaultdict(lambda: []) 
+
+    if args.itervar=="d":
+        _markevery=4
+    else:
+        _markevery=10
+
+    for filename in filenames:
+        
+        version_name = get_version_name(filename)
+        
+        with open(filename, 'rb') as file:
+            results = pd.read_csv(file) 
+            data_dict[version_name] = results
+            print(data_dict[version_name])
+            inds = results[args.itervar][0::_markevery]
+
+
+    width = 0.5
+    offset = width
+
+    breakdown_colors = {"dist_runtime":"purple",
+                          "argmin_runtime":"blue",
+                          "memcpy_runtime":"crimson",
+                          "centroids_runtime":"peru"}
+
+    if args.itervar=="n":
+        title_suffix = f"(d={args.d} k={args.k})"
+    elif args.itervar=="k":
+        title_suffix = f"(d={args.d} n={args.n})"
+    elif args.itervar=="d":
+        title_suffix = f"(n={args.n} k={args.k})"
+
+
+
+    for version in data_dict.keys():
+
+        if version=="cuml-kmeans":
+            continue
+
+        bottom = np.zeros(len(inds))
+
+        for var in ["dist_runtime", "argmin_runtime", "memcpy_runtime", "centroids_runtime"]:
+            plt.bar(np.arange(len(inds)) - (offset) + (offset), data_dict[version][var][0::_markevery], width, 
+                     label=var,
+                     bottom = bottom,
+                     color=breakdown_colors[var])
+            bottom += data_dict[version][var][0::_markevery]
+            plt.xlabel(args.itervar)
+            plt.xticks(np.arange(len(inds)), labels=inds, rotation=45)
+            plt.ylabel("Runtime (s)")
+            #plt.yscale("log")
+            plt.title(f"Runtime Breakdown of 2 Iterations of {version} {title_suffix}")
+            plt.legend()
+
+        plt.savefig(f"./{args.platform}/{version}-{title_suffix}-breakdown", bbox_inches='tight')
+        plt.clf()
+
+
 
 
 def plot_mem(args):
@@ -535,9 +720,12 @@ def plot_mem(args):
     plt.savefig(f"./{args.platform}/kmeans-mem", bbox_inches='tight')
 
 
-def plot_distance_runtime(args):
+def plot_kernel_runtime(args):
+
+    filenames = os.listdir(f"./{args.platform}")
+    filenames = filter_files(args, filenames)
+    filenames = list(map(lambda f: f"./{args.platform}/{f}", filenames))
     
-    filenames = list(filter(lambda f: f"distances" in f and f"n{args.n}-k{args.k}" in f and ".png" not in f, os.listdir(f"./{args.platform}")))
     print(filenames)
     
     data_dict = {}
@@ -546,25 +734,32 @@ def plot_distance_runtime(args):
         
         version = get_version_name(filename)
 
-        with open(f"./{args.platform}/{filename}", 'rb') as file:
-            results = pkl.load(file) 
-            data_dict[version] = results.get_result_data("runtime")
+        with open(f"./{filename}", 'rb') as file:
+            results = pd.read_csv(file) 
+            data_dict[version] = results[args.kernel]
+            inds = results[args.itervar]
 
     name_dict = {"mtx-kmeans-bulk":"bulk",
                  "mtx-kmeans-norm":"norm",
-                 "pytorch":"pytorch"}
+                 "shuffle-kmeans": "shuffle"}
 
-    for version in data_dict.keys():
-        plt.plot(np.arange(len(data_dict[version])), data_dict[version],
-                 label=name_dict[version], color=metadata[version][0],
+    for version in name_dict.keys():
+        if args.kernel=="centroids_runtime" and version=="mtx-kmeans-norm":
+            continue
+        plt.plot(inds, data_dict[version],
+                 label=version, color=metadata[version][0],
                  marker=metadata[version][1])
 
+    kernelnames = {"dist_runtime": "Pairwise Distances",
+                   "centroids_runtime": "Centroids Update"}
+
     plt.ylabel("Runtime (s)")
+    plt.yscale("log")
     plt.xlabel("d")
-    plt.title(f"Runtime of Distances Kernel (n={args.n}, k={args.k})")
+    plt.title(f"Runtime of {kernelnames[args.kernel]} (n={args.n}, k={args.k})")
     plt.legend()
 
-    plt.savefig(f"./{args.platform}/distances-n{args.n}-k{args.k}", bbox_inches='tight')
+    plt.savefig(f"./{args.platform}/{args.kernel}-n{args.n}-k{args.k}", bbox_inches='tight')
             
 
 
@@ -579,21 +774,24 @@ if __name__=="__main__":
     parser.add_argument("--fname", type=str)
     parser.add_argument("--slurm", action='store_true')
     parser.add_argument("--action", type=str)
+    parser.add_argument("--kernel", type=str)
     parser.add_argument("--platform", type=str)
     parser.add_argument("--itervar", type=str)
     parser.add_argument("--bin", type=str)
     parser.add_argument("--ntrials", type=int, default=10)
     parser.add_argument("--maxiters", type=int, default=2)
+    parser.add_argument("--infile", type=str)
     
     args = parser.parse_args()
 
 
     if args.action=="plot-runtime":
+        plot_breakdown(args)
         plot_runtime(args)
     elif args.action=="plot-mem":
         plot_mem(args)
-    elif args.action=="plot-dist":
-        plot_distance_runtime(args)
+    elif args.kernel!=None:
+        plot_kernel_runtime(args)
     elif args.action=="cuml-kmeans":
         run_cuml_kmeans(args)
     elif args.action=="sklearn-kmeans":
@@ -602,10 +800,10 @@ if __name__=="__main__":
         run_torch_kmeans(args)
     elif args.action=="our-kmeans":
         run_our_kmeans(args)
-    elif args.action=="distances":
-        run_distances(args)
-    elif args.action=="torch-distances":
-        run_pytorch_dist(args)
+    elif args.action=="our-kmeans-infile":
+        run_our_kmeans_infile(args)
+    elif args.action=="cuml-kmeans-infile":
+        run_cuml_kmeans_infile(args)
 
 
 
