@@ -637,19 +637,17 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
 #if COMPUTE_DISTANCES_KERNEL>=3
         /* Distances are stored in column-major order if we used fast matrix-centric or arizona for distances 
-                                 */
 		clusters_argmin_shfl<<<argmin_grid_dim, 
                                 argmin_block_dim, 
                                 argmin_sh_mem>>>
                                 (n, k, d_distances, d_points_clusters, 
                                  d_clusters_len, argmin_warps_per_block, INFNTY,
                                  false);
-        /*
+                                 */
         clusters_argmin_cub<<<n, k>>>(d_distances,
                                         n,k,
                                         d_points_clusters,
                                         d_clusters_len);
-                                        */
 #else
 		clusters_argmin_shfl<<<argmin_grid_dim, 
                                 argmin_block_dim, 

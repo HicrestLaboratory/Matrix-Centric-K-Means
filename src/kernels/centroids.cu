@@ -1,5 +1,8 @@
 #include "kernels.cuh"
 #include "../cuda_utils.cuh"
+#include "cub/cub.cuh"
+
+
 
 __global__ void compute_centroids_shfl(DATA_TYPE* centroids, const DATA_TYPE* points, 
                                        const uint32_t* points_clusters, 

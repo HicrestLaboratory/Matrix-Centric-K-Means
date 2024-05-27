@@ -286,7 +286,7 @@ def run_cuml_kmeans(args):
         compute_time = 0
         
         # Init Kmeans
-        kmeans = KMeans(n_clusters=k, max_iter=args.maxiters, verbose=6)
+        kmeans = KMeans(n_clusters=k, max_iter=args.maxiters, verbose=6, init="random")
 
         # Warm up
         kmeans.fit(d_points)
@@ -310,9 +310,11 @@ def run_cuml_kmeans(args):
         
         compute_time = compute_time / (args.ntrials - 1)
         memcpy_time = memcpy_time / (args.ntrials - 1)
+        score = kmeans.score(d_points)
 
         print(f"Compute Time: {compute_time}s")
         print(f"Memcpy Time: {memcpy_time}s")
+        print(f"Score: {score}")
 
         trial_manager.add_sample({"memcpy_runtime":memcpy_time,
                                   "runtime": compute_time,
@@ -336,7 +338,7 @@ def run_cuml_kmeans_infile(args):
 
     n = points.shape[0]
     d = points.shape[1]
-    k_vec = np.arange(2, args.k, 100) 
+    k_vec = np.arange(100, args.k, 100) 
 
 
     print(f"Running cuml on {args.infile}, n={n} d={d}")
@@ -348,7 +350,7 @@ def run_cuml_kmeans_infile(args):
     
     # Init Kmeans
     for k in k_vec:
-        kmeans = KMeans(n_clusters=k, max_iter=args.maxiters, verbose=6)
+        kmeans = KMeans(n_clusters=k, max_iter=args.maxiters, verbose=6, init="random")
 
         # Warm up
         kmeans.fit(d_points)
@@ -453,7 +455,7 @@ def run_our_kmeans_infile(args):
     df = pd.read_csv(args.infile)
     n = df.shape[0]
     d = df.shape[1]
-    k_vec = np.arange(2, args.k, 100)
+    k_vec = np.arange(100, args.k, 100)
 
     cmd += f"-n {n} -d {d} "
 
