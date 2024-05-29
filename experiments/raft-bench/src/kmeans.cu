@@ -295,8 +295,8 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k)
 
     auto kmeans_duration = std::chrono::duration_cast<std::chrono::duration<double>>(etime - stime);
     {
-
         auto minClusterAndDistance = raft::make_device_vector<raft::KeyValuePair<ind_t, data_t>, ind_t>(handle, n);
+
         auto l2Norm = raft::make_device_vector<data_t, ind_t>(handle, n);
         linalg::rowNorm(l2Norm.data_handle(), points.data_handle(), points.extent(1), points.extent(0),
                         linalg::L2Norm, true, stream); 
@@ -333,7 +333,10 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k)
     {
 
         auto pwDist = raft::make_device_matrix<data_t, ind_t>(handle, n, k);
-        auto minClusterDistance = raft::make_device_vector<data_t, ind_t>(handle, n);
+
+        auto minClusterAndDistance = raft::make_device_vector<raft::KeyValuePair<ind_t, data_t>, ind_t>(handle, n);
+
+        raft::KeyValuePair<ind_t, data_t> init(0, std::numeric_limits<data_t>::max());
 
         for (int i=0; i<n_iter_run; i++) {
             stime = std::chrono::system_clock::now();
@@ -351,13 +354,19 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k)
             pw_dist_time += pw_duration.count();
 
             stime = std::chrono::system_clock::now();
-            linalg::coalescedReduction(minClusterDistance.data_handle(),
+            linalg::coalescedReduction
+                                        (minClusterAndDistance.data_handle(),
                                         pwDist.data_handle(),
                                         pwDist.extent(1), pwDist.extent(0),
-                                        std::numeric_limits<data_t>::max(),
+                                        init,
                                         stream, true,
-                                        raft::identity_op{},
-                                        raft::min_op{},
+                                        [=] __device__(const data_t val, const ind_t i) {
+                                            raft::KeyValuePair<ind_t, data_t> pair;
+                                            pair.key   = i;
+                                            pair.value = val;
+                                            return pair;
+                                        },
+                                        raft::argmin_op{},
                                         raft::identity_op{});
             etime = std::chrono::system_clock::now();
             auto amin_duration = std::chrono::duration_cast<std::chrono::duration<double>>(etime - stime);
