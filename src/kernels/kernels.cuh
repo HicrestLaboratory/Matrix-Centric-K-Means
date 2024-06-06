@@ -96,13 +96,24 @@ void compute_centroids_gemm(cublasHandle_t& handle,
                             const DATA_TYPE * d_V, const DATA_TYPE * d_points,
                             DATA_TYPE * d_centroids);
 
-
+//GLOBAL TODO: Handle case where we can't allocate enough blocks to make this work
+template <typename ClusterIter>
 __global__ void compute_v_sparse(DATA_TYPE * d_vals,
                                  int32_t * d_rowinds,
                                  int32_t * d_col_offsets,
-                                 const uint32_t * d_points_clusters,
+                                 ClusterIter d_points_clusters,
                                  const uint32_t * d_clusters_len,
-                                 const uint32_t n);
+                                 const uint32_t n)
+{
+    const int32_t tid = threadIdx.x + blockDim.x * blockIdx.x; 
+    if (tid<n) {
+        d_vals[tid] = ((DATA_TYPE) 1) / (DATA_TYPE)(d_clusters_len[d_points_clusters[tid]]);
+        d_rowinds[tid] = (int32_t)d_points_clusters[tid];
+        d_col_offsets[tid] = tid;
+    }
+    d_col_offsets[n] = n; //This might be horrible
+}
+
 
 void compute_centroids_spmm(cusparseHandle_t& handle,
                             const uint32_t d, const uint32_t n, const uint32_t k,

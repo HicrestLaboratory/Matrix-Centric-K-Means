@@ -4,6 +4,7 @@ add_executable(
   ./kernels/argmin.cu
   ./kernels/centroids.cu
   ./kernels/distances.cu
+  ./kernels/convergence.cu
   main.cu
   kmeans.cu
   kmeans.cuh
@@ -11,6 +12,13 @@ add_executable(
   ./include/utils.hpp
   )
 
-target_link_libraries(gpukmeans PRIVATE -lcublas -lgomp -lcusparse)
+
+target_link_libraries(gpukmeans PRIVATE -lcublas -lgomp -lcusparse -L"/opt/nvidia/hpc_sdk/Linux_x86_64/23.9/math_libs/lib64/")
 target_link_libraries(gpukmeans PRIVATE utils)
-target_compile_options(gpukmeans PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Wall -Wextra -fopenmp -Wl,-rpath,/usr/local/cuda/lib64>)
+#target_include_directories(gpukmeans PUBLIC /opt/nvidia/hpc_sdk/Linux_x86_64/23.9/cuda/12.2/include )
+
+
+
+
+target_link_libraries(gpukmeans PRIVATE raft::raft raft::compiled)
+

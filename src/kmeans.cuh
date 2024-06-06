@@ -29,23 +29,6 @@ const int num_colors = sizeof(colors)/sizeof(uint32_t);
 #define POP_RANGE nvtxRangePop();
 #endif
 
-/**
- * @brief
- * 0: compute_distances_one_point_per_warp
- * 1: compute_distances_shfl
- * 2: matrix multiplication
- * 3: matrix multiplication bulk
- * 4: matrix multiplication norm
- */
-#define COMPUTE_DISTANCES_KERNEL 3
-
-/**
- * @brief
- * 0: compute_centroids_shfl
- * 1: compute_centroids_gemm
- * 2: compute_centroids_spmm
- */
-#define COMPUTE_CENTROIDS_KERNEL 2
 
 class Kmeans {
   public:
@@ -69,7 +52,7 @@ class Kmeans {
      */
     uint64_t run(uint64_t maxiter);
 
-    float score();
+    inline float get_score() const {return score;}
 
   private:
     const size_t n;
@@ -83,12 +66,14 @@ class Kmeans {
 
     DATA_TYPE* h_points;
     DATA_TYPE* h_centroids;
-    DATA_TYPE* h_last_centroids;
+    DATA_TYPE* d_new_centroids;
     DATA_TYPE * d_last_centroids;
     DATA_TYPE* h_centroids_matrix;
     uint32_t*  h_points_clusters;
     DATA_TYPE* d_points;
     DATA_TYPE* d_centroids;
+
+    DATA_TYPE score;
 
     cudaDeviceProp* deviceProps;
 

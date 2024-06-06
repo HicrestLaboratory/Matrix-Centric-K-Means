@@ -118,3 +118,5 @@ void schedule_argmin_kernel(const cudaDeviceProp *props, const uint32_t n, const
   *warps_per_block = (k + props->warpSize - 1) / props->warpSize; // Ceil
   *sh_mem = (*warps_per_block) * sizeof(Pair);
 }
+
+

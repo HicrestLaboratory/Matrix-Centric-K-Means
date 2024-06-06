@@ -74,19 +74,6 @@ __global__ void compute_distances_shfl(DATA_TYPE* distances, const DATA_TYPE* ce
 }
 
 void schedule_distances_kernel(const cudaDeviceProp *props, const uint32_t n, const uint32_t d, const uint32_t k, dim3 *grid, dim3 *block, uint32_t* max_points_per_warp) {
-	const uint32_t warpSize = props->warpSize;
-	if (d <= warpSize && COMPUTE_DISTANCES_KERNEL == 1) {
-		*max_points_per_warp = warpSize / next_pow_2(d); // Does not work for d > 32
-		dim3 dist_grid_dim(ceil(((float) n) / (*max_points_per_warp)), k);
-		dim3 dist_block_dim((*max_points_per_warp) * next_pow_2(d));
-		*grid		= dist_grid_dim;
-		*block	= dist_block_dim;
-	} else {
-		dim3 dist_grid_dim(n, k);
-		dim3 dist_block_dim(min(d, warpSize));
-		*grid		= dist_grid_dim;
-		*block	= dist_block_dim;
-	}
 }
 
 /*** END Warp oriented ***/
@@ -613,7 +600,7 @@ __global__ void add_norm_mtx_row(const uint32_t m, const uint32_t n,
 {
     const uint32_t tid = threadIdx.x + (blockDim.x * blockIdx.x);
     if (tid < m*n) {
-        const uint32_t norm_idx = (tid % m);
+        const uint32_t norm_idx = (tid / n);
         mtx[tid] += norm_mtx[norm_idx];
     }
 }
@@ -624,7 +611,7 @@ __global__ void add_norm_mtx_col(const uint32_t m, const uint32_t n,
 {
     const uint32_t tid = threadIdx.x + (blockDim.x * blockIdx.x);
     if (tid < m*n) {
-        const uint32_t norm_idx = (tid / m);
+        const uint32_t norm_idx = (tid % n);
         mtx[tid] += norm_mtx[norm_idx];
     }
 }
@@ -642,12 +629,12 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
     /* -2.0*P*C */
     CHECK_CUBLAS_ERROR(cublasSgemm(handle,
                                     CUBLAS_OP_T, CUBLAS_OP_N,
-                                    n, k, d,
+                                    k, n, d,
                                     &alpha,
-                                    d_points, d,
                                     d_centroids, d,
+                                    d_points, d,
                                     &beta,
-                                    d_distances, n));
+                                    d_distances, k));
 
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
@@ -656,9 +643,9 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
     const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
     add_norm_mtx_row<<<grid_dim, block_dim>>>(n, k, d_points_norms, d_distances);
 
-    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
     add_norm_mtx_col<<<grid_dim, block_dim>>>(n, k, d_centroids_norms, d_distances);
+
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
 }
 
