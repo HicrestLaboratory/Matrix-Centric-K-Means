@@ -69,7 +69,7 @@ class Kmeans {
     DATA_TYPE* d_new_centroids;
     DATA_TYPE * d_last_centroids;
     DATA_TYPE* h_centroids_matrix;
-    uint32_t*  h_points_clusters;
+    std::vector<uint32_t>  h_points_clusters;
     DATA_TYPE* d_points;
     DATA_TYPE* d_centroids;
 

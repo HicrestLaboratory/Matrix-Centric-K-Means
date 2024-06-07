@@ -14,6 +14,7 @@
 
 #include <thrust/copy.h>
 #include <thrust/device_ptr.h>
+#include <thrust/device_vector.h>
 #include <thrust/iterator/counting_iterator.h>
 
 #include <raft/core/device_mdarray.hpp>
@@ -48,6 +49,7 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
 		: n(_n), d(_d), k(_k), tol(_tol),
 		POINTS_BYTES(_n * _d * sizeof(DATA_TYPE)),
 		CENTROIDS_BYTES(_k * _d * sizeof(DATA_TYPE)),
+        h_points_clusters(_n),
 		points(_points),
 		deviceProps(_deviceProps),
         initMethod(_initMethod)
@@ -101,7 +103,6 @@ Kmeans::~Kmeans () {
 	delete generator;
 	CHECK_CUDA_ERROR(cudaFreeHost(h_points));
 	CHECK_CUDA_ERROR(cudaFreeHost(h_centroids));
-	CHECK_CUDA_ERROR(cudaFreeHost(h_points_clusters));
 	CHECK_CUDA_ERROR(cudaFree(d_centroids));
     CHECK_CUDA_ERROR(cudaFree(d_new_centroids));
 	CHECK_CUDA_ERROR(cudaFree(d_points));
@@ -323,7 +324,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
     uint32_t* d_points_clusters;
     CHECK_CUDA_ERROR(cudaMalloc(&d_points_clusters, sizeof(uint32_t)*n));
-    CHECK_CUDA_ERROR(cudaMallocHost(&h_points_clusters, n * sizeof(uint32_t)));
 
     uint32_t* d_clusters_len;
     CHECK_CUDA_ERROR(cudaMalloc(&d_clusters_len, k * sizeof(uint32_t)));
@@ -382,7 +382,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
     CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&C_descr,
                                               k, d, d,
-                                              d_centroids,
+                                              d_new_centroids,
                                               CUDA_R_32F,
                                               CUSPARSE_ORDER_ROW));
 
@@ -555,10 +555,14 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
         printf(GREEN "[DEBUG_KERNEL_ARGMIN]\n" RESET);
 
-        uint32_t tmp1[n];
-        CHECK_CUDA_ERROR(cudaMemcpy(tmp1, 
-                                    d_points_clusters, n * sizeof(uint32_t), 
-                                    cudaMemcpyDeviceToHost));
+        thrust::device_vector<uint32_t> d_points_clusters_vec(n);
+
+        thrust::copy(clusters, clusters+n, std::begin(d_points_clusters_vec));
+
+        std::vector<uint32_t> tmp1(n);
+        thrust::copy(d_points_clusters_vec.begin(), 
+                d_points_clusters_vec.end(), 
+                    std::begin(tmp1));
 
         printf(GREEN "p  -> c\n");
         for (uint32_t i = 0; i < n; ++i)
@@ -569,7 +573,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
 		///////////////////////////////////////////* COMPUTE NEW CENTROIDS *///////////////////////////////////////////
 
-		CHECK_CUDA_ERROR(cudaMemset(d_centroids, 0, k * d * sizeof(DATA_TYPE)));
+		CHECK_CUDA_ERROR(cudaMemset(d_new_centroids, 0, k * d * sizeof(DATA_TYPE)));
 
 #if PERFORMANCES_KERNEL_CENTROIDS
 
@@ -617,7 +621,10 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 #if DEBUG_KERNEL_CENTROIDS
 
         CHECK_CUDA_ERROR(cudaMemset(h_centroids, 0, k * d * sizeof(DATA_TYPE)));
-        CHECK_CUDA_ERROR(cudaMemcpy(h_points_clusters, d_points_clusters, n * sizeof(uint32_t), cudaMemcpyDeviceToHost));
+
+        thrust::device_vector<uint32_t> d_clusters_vec(n);
+        thrust::copy(clusters, clusters + n, d_clusters_vec.begin());
+        thrust::copy(d_clusters_vec.begin(), d_clusters_vec.end(), h_points_clusters.begin());
 
         uint32_t* h_clusters_len;
         CHECK_CUDA_ERROR(cudaMallocHost(&h_clusters_len, k * sizeof(uint32_t)));
@@ -650,7 +657,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         }
 
         CHECK_CUDA_ERROR(cudaMemset(h_centroids, 0, d * k * sizeof(DATA_TYPE)));
-        CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, 
+        CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_new_centroids, 
                                     d * k * sizeof(DATA_TYPE), 
                                     cudaMemcpyDeviceToHost));
 
@@ -699,7 +706,14 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
         if (iter > 1 && (sqrd_norm_err < tol)) {
             converged = iter;
+            thrust::device_vector<uint32_t> d_points_clusters_vec(n);
+            thrust::copy(clusters, clusters + n, d_points_clusters_vec.begin());
+            thrust::copy(d_points_clusters_vec.begin(), d_points_clusters_vec.end(), h_points_clusters.begin());
             break;
+        } else if (iter==maxiter) {
+            thrust::device_vector<uint32_t> d_points_clusters_vec(n);
+            thrust::copy(clusters, clusters + n, d_points_clusters_vec.begin());
+            thrust::copy(d_points_clusters_vec.begin(), d_points_clusters_vec.end(), h_points_clusters.begin());
         }
 
 
@@ -726,9 +740,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 #endif
 
 	/* COPY BACK RESULTS*/
-    //TODO: Right now this won't work with the new clusters iterator type
-	CHECK_CUDA_ERROR(cudaMemcpy(h_points_clusters, d_points_clusters, n * sizeof(uint32_t), cudaMemcpyDeviceToHost));
-	CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
 	for (size_t i = 0; i < n; i++) {
 		points[i]->setCluster(h_points_clusters[i]);
 	}
@@ -738,35 +750,15 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 	CHECK_CUDA_ERROR(cudaFree(d_points_clusters));
 	CHECK_CUDA_ERROR(cudaFree(d_clusters_len));
 
-#if COMPUTE_DISTANCES_KERNEL==2
-
-    CHECK_CUDA_ERROR(cudaFree(d_points_assoc_matrices));
-    CHECK_CUDA_ERROR(cudaFree(d_centroids_matrix));
-
-#elif COMPUTE_DISTANCES_KERNEL==3
-
-    CHECK_CUDA_ERROR(cudaFree(d_C));
-    CHECK_CUDA_ERROR(cudaFree(d_P));
-
-#elif COMPUTE_DISTANCES_KERNEL==4
     CHECK_CUDA_ERROR(cudaFree(d_centroids_row_norms));
     CHECK_CUDA_ERROR(cudaFree(d_points_row_norms));
-#endif
 
-#if COMPUTE_CENTROIDS_KERNEL==1
-    CHECK_CUDA_ERROR(cudaFree(d_V));
-#elif COMPUTE_CENTROIDS_KERNEL==2
     CHECK_CUDA_ERROR(cudaFree(d_V_vals));
     CHECK_CUDA_ERROR(cudaFree(d_V_rowinds));
     CHECK_CUDA_ERROR(cudaFree(d_V_col_offsets));
     CHECK_CUSPARSE_ERROR(cusparseDestroy(cusparseHandle));
-#endif
 
-#if COMPUTE_DISTANCES_KERNEL>=2
     CHECK_CUBLAS_ERROR(cublasDestroy(cublasHandle));
-#elif COMPUTE_CENTROIDS_KERNEL==1
-    CHECK_CUBLAS_ERROR(cublasDestroy(cublasHandle));
-#endif
 
 	return converged;
 }
