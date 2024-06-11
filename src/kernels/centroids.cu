@@ -211,6 +211,23 @@ void compute_centroids_spmm(cusparseHandle_t& handle,
 }
 
 
+__global__ void find_stationary_clusters(const uint32_t n,
+                              const uint32_t k,
+                              const int32_t * d_clusters_mask, 
+                              const uint32_t * d_clusters, const uint32_t * d_clusters_prev,
+                              uint32_t * d_stationary_clusters)
+{
+
+    const uint32_t idx = threadIdx.x + (blockDim.x * blockIdx.x);
+    if (idx < n) {
+        int32_t mask_val = d_clusters_mask[idx];
+        uint32_t is_same = uint32_t(mask_val==0);
+        atomicMin(&(d_stationary_clusters[d_clusters[idx]]), is_same);
+        atomicMin(&(d_stationary_clusters[d_clusters_prev[idx]]), is_same);
+    }
+
+}
+
 
 
 

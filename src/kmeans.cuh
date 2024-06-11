@@ -5,6 +5,16 @@
 #include "include/common.h"
 #include "include/point.hpp"
 #include <cublas_v2.h>
+#include <cub/cub.cuh>
+
+#include <thrust/copy.h>
+#include <thrust/device_ptr.h>
+#include <thrust/device_vector.h>
+#include <thrust/iterator/counting_iterator.h>
+
+#include <raft/core/kvp.hpp>
+#include <raft/core/device_resources.hpp>
+#include <raft/core/device_mdarray.hpp>
 
 #ifdef NVTX
 #include "nvToolsExt.h"
@@ -39,6 +49,15 @@ class Kmeans {
         kmeans_plus_plus
     };
 
+	template <typename IndexT, typename DataT>
+	struct KeyValueIndexOp {
+	  __host__ __device__ __forceinline__ IndexT
+	  operator()(const raft::KeyValuePair<IndexT, DataT>& a) const
+	  {
+		return a.key;
+	  }
+	};
+
     Kmeans(const size_t n, const uint32_t d, const uint32_t k, const float tol, const int *seed, Point<DATA_TYPE>** points, cudaDeviceProp* deviceProps,
             InitMethod _initMethod=InitMethod::random);
     ~Kmeans();
@@ -67,11 +86,12 @@ class Kmeans {
     DATA_TYPE* h_points;
     DATA_TYPE* h_centroids;
     DATA_TYPE* d_new_centroids;
-    DATA_TYPE * d_last_centroids;
     DATA_TYPE* h_centroids_matrix;
     std::vector<uint32_t>  h_points_clusters;
     DATA_TYPE* d_points;
     DATA_TYPE* d_centroids;
+
+
 
     DATA_TYPE score;
 

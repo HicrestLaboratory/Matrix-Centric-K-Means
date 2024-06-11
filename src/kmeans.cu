@@ -22,6 +22,7 @@
 #include <raft/cluster/kmeans_types.hpp>
 #include <raft/core/resources.hpp>
 #include <raft/linalg/map.cuh>
+#include <raft/linalg/subtract.cuh>
 
 
 
@@ -54,7 +55,6 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
 		deviceProps(_deviceProps),
         initMethod(_initMethod)
 {
-
 	if (seed) {
 		seed_seq s{*seed};
 		generator = new mt19937(s);
@@ -314,19 +314,45 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     cudaEventDestroy(e_centroid_init_stop);
 
 #endif
-
-
     const raft::resources raft_handle;
+
     const cudaStream_t stream = raft::resource::get_cuda_stream(raft_handle);
+
+    /*
+    auto d_clusters = raft::make_device_vector<uint32_t>(raft_handle, n);
+    auto d_clusters_prev = raft::make_device_vector<uint32_t>(raft_handle, n);
+    auto d_clusters_mask = raft::make_device_vector<uint32_t>(raft_handle, n);
+    auto d_stationary_clusters = raft::make_device_vector<uint32_t>(raft_handle, k);
+    */
+    thrust::device_vector<uint32_t> d_clusters(n);
+    thrust::device_vector<uint32_t> d_clusters_prev(n);
+    thrust::device_vector<int32_t> d_clusters_mask(n);
+    thrust::device_vector<uint32_t> d_stationary_clusters(k);
+
+
+    KeyValueIndexOp<uint32_t, DATA_TYPE> conversion_op;
+    auto min_cluster_and_distance = raft::make_device_vector<raft::KeyValuePair<uint32_t, DATA_TYPE>, uint32_t>(raft_handle, n);
+
+    raft::KeyValuePair<uint32_t, DATA_TYPE> initial_value(0, std::numeric_limits<DATA_TYPE>::max());
+
+    thrust::fill(raft::resource::get_thrust_policy(raft_handle),
+               min_cluster_and_distance.data_handle(),
+               min_cluster_and_distance.data_handle() + min_cluster_and_distance.size(),
+               initial_value);
+
+    thrust::fill(raft::resource::get_thrust_policy(raft_handle),
+               d_clusters_prev.begin(),
+               d_clusters_prev.end() ,
+               k+1);
+
 
     DATA_TYPE* d_distances;
     CHECK_CUDA_ERROR(cudaMalloc(&d_distances, n * k * sizeof(DATA_TYPE)));
 
-    uint32_t* d_points_clusters;
-    CHECK_CUDA_ERROR(cudaMalloc(&d_points_clusters, sizeof(uint32_t)*n));
 
     uint32_t* d_clusters_len;
     CHECK_CUDA_ERROR(cudaMalloc(&d_clusters_len, k * sizeof(uint32_t)));
+
 
     uint64_t iter = 0;
 
@@ -425,6 +451,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         cudaEventDestroy(e_perf_dist_stop);
 
 #endif
+        std::cout<<"made it past perf"<<std::endl;
 
 #if DEBUG_KERNEL_DISTANCES
 
@@ -481,14 +508,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 		CHECK_CUDA_ERROR(cudaMemset(d_clusters_len, 0, k * sizeof(uint32_t)));
 
 
-        auto min_cluster_and_distance = raft::make_device_vector<raft::KeyValuePair<uint32_t, DATA_TYPE>, uint32_t>(raft_handle, n);
-        
-        raft::KeyValuePair<uint32_t, DATA_TYPE> initial_value(0, std::numeric_limits<DATA_TYPE>::max());
-
-        thrust::fill(raft::resource::get_thrust_policy(raft_handle),
-                   min_cluster_and_distance.data_handle(),
-                   min_cluster_and_distance.data_handle() + min_cluster_and_distance.size(),
-                   initial_value);
+        std::cout<<"starting cluster stuff"<<std::endl;
 
         auto pw_dist_const = raft::make_device_matrix_view<const DATA_TYPE, uint32_t>(d_distances, k, n);
 
@@ -508,16 +528,85 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                 raft::identity_op{});
 
         //extract cluster labels from kvpair into d_points_clusters
-        raft::cluster::kmeans::KeyValueIndexOp<uint32_t, DATA_TYPE> conversion_op;
         cub::TransformInputIterator<uint32_t,
-                                    raft::cluster::KeyValueIndexOp<uint32_t, DATA_TYPE>,
+                                    KeyValueIndexOp<uint32_t, DATA_TYPE>,
                                     raft::KeyValuePair<uint32_t, DATA_TYPE>*>
         clusters(min_cluster_and_distance.data_handle(), conversion_op);
 
-        cub::TransformInputIterator<DATA_TYPE,
-                                    raft::cluster::KeyValueIndexOp<uint32_t, DATA_TYPE>,
-                                    raft::KeyValuePair<uint32_t, DATA_TYPE>*>
-        min_distances(min_cluster_and_distance.data_handle(), conversion_op);
+        thrust::copy(clusters, clusters+n, d_clusters.begin());
+
+        std::cout<<"done with cluster stuff"<<std::endl;
+        //compute cluster mask
+        if (iter > 1) {
+            thrust::fill(raft::resource::get_thrust_policy(raft_handle), 
+                            d_stationary_clusters.begin(), d_stationary_clusters.end(), 1);
+            uint32_t * d_clusters_ptr = thrust::raw_pointer_cast(d_clusters.data());
+            uint32_t * d_clusters_prev_ptr = thrust::raw_pointer_cast(d_clusters_prev.data());
+            int32_t * d_clusters_mask_ptr = thrust::raw_pointer_cast(d_clusters_mask.data());
+            uint32_t * d_stationary_clusters_ptr = thrust::raw_pointer_cast(d_stationary_clusters.data());
+            raft::linalg::subtract(d_clusters_mask_ptr,
+                                    d_clusters_ptr,
+                                    d_clusters_prev_ptr,
+                                    n,
+                                    stream);
+            find_stationary_clusters<<<(ceil( (float)n / 1024.0f)), 1024>>>(n,k,
+                                                                        d_clusters_mask_ptr,
+                                                                        d_clusters_ptr,
+                                                                        d_clusters_prev_ptr,
+                                                                        d_stationary_clusters_ptr);
+            //CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+#ifdef DEBUG_PRUNING
+
+            std::vector<uint32_t> h_clusters(n);
+            std::vector<uint32_t> h_clusters_prev(n);
+            std::vector<uint32_t> h_stationary_clusters(k);
+            std::vector<int32_t> h_mask(n);
+
+            thrust::copy(d_clusters.begin(), d_clusters.end(), h_clusters.begin());
+            thrust::copy(d_clusters_prev.begin(), d_clusters_prev.end(), h_clusters_prev.begin());
+            thrust::copy(d_stationary_clusters.begin(), d_stationary_clusters.end(), h_stationary_clusters.begin());
+            thrust::copy(d_clusters_mask.begin(), d_clusters_mask.end(), h_mask.begin());
+
+            std::cout<<"CLUSTERS"<<std::endl;
+            for (int i=0; i<n; i++) {
+                std::cout<<h_clusters[i]<<":"<<h_clusters_prev[i]<<std::endl;
+            }
+
+            std::cout<<"LIST OF STATIONARY CLUSTERS"<<std::endl;
+            std::for_each(h_stationary_clusters.begin(), h_stationary_clusters.end(), [](auto& elem)
+                    {std::cout<<elem<<std::endl;});
+
+            std::cout<<"MASK"<<std::endl;
+            std::for_each(h_mask.begin(), h_mask.end(), [](auto& elem)
+                    {std::cout<<elem<<std::endl;});
+
+
+#endif
+
+#ifdef COUNT_STATIONARY_CLUSTERS
+            auto d_n_same = raft::make_device_scalar(raft_handle, DATA_TYPE(0));
+            float n_same;
+            void * d_tmp_storage = nullptr;
+            size_t tmp_bytes = 0;
+            cub::DeviceReduce::Sum(d_tmp_storage, tmp_bytes, d_stationary_clusters_ptr,
+                                    d_n_same.data_handle(), k);
+
+            CHECK_CUDA_ERROR(cudaMalloc(&d_tmp_storage, tmp_bytes));
+
+            cub::DeviceReduce::Sum(d_tmp_storage, tmp_bytes, d_stationary_clusters_ptr,
+                                    d_n_same.data_handle(), k);
+
+            raft::copy(&n_same, d_n_same.data_handle(), 1, stream);
+
+            std::cout<<"NUMBER OF STATIONARY CENTROIDS: "<<n_same<<std::endl;
+
+            CHECK_CUDA_ERROR(cudaFree(d_tmp_storage));
+#endif
+
+        }
+
+        thrust::copy(clusters, clusters+n, d_clusters_prev.begin());
 
 
         //TODO: prune centroids that don't move
@@ -622,9 +711,8 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
         CHECK_CUDA_ERROR(cudaMemset(h_centroids, 0, k * d * sizeof(DATA_TYPE)));
 
-        thrust::device_vector<uint32_t> d_clusters_vec(n);
-        thrust::copy(clusters, clusters + n, d_clusters_vec.begin());
-        thrust::copy(d_clusters_vec.begin(), d_clusters_vec.end(), h_points_clusters.begin());
+        thrust::copy(clusters, clusters + n, d_clusters.begin());
+        thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
 
         uint32_t* h_clusters_len;
         CHECK_CUDA_ERROR(cudaMallocHost(&h_clusters_len, k * sizeof(uint32_t)));
@@ -704,6 +792,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                                 raft::add_op{});
         score = d_score.value(stream);
 
+        //TODO: This can definitely be made faster
         if (iter > 1 && (sqrd_norm_err < tol)) {
             converged = iter;
             thrust::device_vector<uint32_t> d_points_clusters_vec(n);
@@ -747,7 +836,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
 	/* FREE MEMORY */
 	CHECK_CUDA_ERROR(cudaFree(d_distances));
-	CHECK_CUDA_ERROR(cudaFree(d_points_clusters));
 	CHECK_CUDA_ERROR(cudaFree(d_clusters_len));
 
     CHECK_CUDA_ERROR(cudaFree(d_centroids_row_norms));

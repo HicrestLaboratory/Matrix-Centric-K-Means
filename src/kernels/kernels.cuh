@@ -129,6 +129,11 @@ void compute_centroids_spmm(cusparseHandle_t& handle,
 void check_p_correctness(DATA_TYPE * P, DATA_TYPE * points, uint32_t n, uint32_t d);
 void check_c_correctness(DATA_TYPE * C, DATA_TYPE * centroids, uint32_t k, uint32_t d);
 
+__global__ void find_stationary_clusters(const uint32_t n,
+                              const uint32_t k,
+                              const int32_t * d_clusters_mask, 
+                              const uint32_t * d_clusters, const uint32_t * d_clusters_prev,
+                              uint32_t * d_stationary_clusters);
 
 void compute_row_norm_mtx(cublasHandle_t& handle,
                         const uint32_t m, const uint32_t n, const uint32_t k,
