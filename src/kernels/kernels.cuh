@@ -90,6 +90,16 @@ __global__ void compute_v_matrix(DATA_TYPE * d_V,
                                  const uint32_t n, const uint32_t k,
                                  const uint32_t rounds);
 
+__global__ void prune_centroids(const DATA_TYPE * d_new_centroids,
+                                DATA_TYPE * d_centroids,
+                                const uint32_t * d_stationary,
+                                const uint32_t * d_offsets,
+                                const uint32_t d, const uint32_t k,
+                                const uint32_t k_pruned);
+
+__global__ void scale_clusters(uint32_t * d_clusters,
+                               uint32_t * d_offsets,
+                               const uint32_t n);
 
 void compute_centroids_gemm(cublasHandle_t& handle,
                             const uint32_t d, const uint32_t n, const uint32_t k,

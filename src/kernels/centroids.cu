@@ -132,6 +132,30 @@ __global__ void compute_v_matrix(DATA_TYPE * d_V,
 }
 
 
+__global__ void prune_centroids(const DATA_TYPE * d_new_centroids,
+                                DATA_TYPE * d_centroids,
+                                const uint32_t * d_stationary,
+                                const uint32_t * d_offsets,
+                                const uint32_t d, const uint32_t k,
+                                const uint32_t k_pruned)
+{
+
+    const uint32_t tid = threadIdx.x + (blockIdx.x * blockDim.x);
+    const uint32_t rowid = tid / d;
+    const uint32_t colid = tid % d;
+
+    d_centroids[rowid * d + colid] = d_new_centroids[(rowid + d_offsets[rowid]) * d + colid];
+
+}
+
+
+__global__ void scale_clusters(uint32_t * d_clusters,
+                               uint32_t * d_offsets,
+                               const uint32_t n)
+{
+    const uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+    d_clusters[tid] += d_offsets[d_clusters[tid]];
+}
 
 
 void compute_centroids_gemm(cublasHandle_t& handle,
