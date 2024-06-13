@@ -24,7 +24,7 @@ metadata = {"mtx-kmeans-2":("purple", "x"),
             "cuml-kmeans":("lime", "v", "."),
             "mtx-kmeans-bulk":("crimson", "s", "x"),
             "mtx-kmeans-norm":("orange", "^", "o"),
-            "pytorch":("black", "+")}
+            "raft-kmeans":("black", "+")}
 font = FontProperties()
 font.set_family("monospace")
 
@@ -86,7 +86,7 @@ class KmeansTrial(Trial):
         pattern = r"compute_distances time: (\d+\.\d+)"
         dist_time = self.compute_time_avg(pattern, output, n_trials)
 
-        pattern = r"Score: \-(\d+\.\d+)"
+        pattern = r"Score: (\d+\.\d+)"
         match = re.search(pattern, output)
         score = float(match.group(1))
 
@@ -129,109 +129,117 @@ class CuMLTrial(Trial):
         super().__init__()
 
 
+class RaftTrial(Trial):
 
-class Results:
+    features = ["runtime", 
+                "dist_runtime",
+                "argmin_runtime",
+                "fused_runtime",
+                "centroids_runtime",
+                "d", "k", "n", 
+                "name",
+                "score"]
 
     def __init__(self):
-        self.results = []
-
-    @dataclass
-    class Result:
-        n:int
-        k:int
-        d:int
-        runtime: float
-        mem: float
-    
-    def add_result(self, n, k, d, runtime, mem):
-        self.results.append(self.Result(n, k, d, runtime, mem))
-
-    def get_result_data(self, name):
-        return list(map(lambda r: r.__dict__[name],  self.results))
-
-    def save(self, fname):
-        with open(f"{fname}.pkl", 'wb') as file:
-            pkl.dump(self, file)
-
-def run_pytorch_dist(args):
-    
-    import torch
-
-    pytorch_dist_results = Results()
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    if args.dmax:
-        d_vals = np.arange(2, args.dmax+1, 2)
-    else:
-        d_vals = [ args.d ]
-
-    for d in d_vals:
-
-        print(f"Running pytorch distances d={d}...")
-
-        # Generate random data 
-        points = torch.tensor(np.random.rand(args.n, d)).to(device)
-
-        centroids = torch.tensor(np.random.rand(args.k, d)).to(device)
-        
-        total_time = 0
-        for _ in range(args.ntrials):
-            stime = time.time()
-            torch.cdist(points, centroids)
-            etime = time.time()
-            total_time += (etime - stime)
-
-        t = total_time / args.ntrials
-        print(f"Total time: {t}")
-
-        pytorch_dist_results.add_result(args.n, args.k, d, t, 0)
-
-    pytorch_dist_results.save(f"./distances-pytorch-n{args.n}-k{args.k}")
+        super().__init__()
 
 
-def run_torch_kmeans(args):
+    def parse_output(self, result, n_trials):
 
-    import torch
-    from torch_kmeans import KMeans
+        output = result.stdout
 
-    pytorch_kmeans_results = Results()
+        print(output)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        pattern = r"n:(\d+) d:(\d+) k:(\d+)"
+        matches = re.findall(pattern, output)[0]
+        n,d,k = int(matches[0]), int(matches[1]), int(matches[2]) 
 
-    print(f"Found device {device}")
-    
-    if args.dmax:
-        d_vals = np.arange(2, args.dmax+1, 2)
-    else:
-        d_vals = [ args.d ]
+        get_time_str = lambda s: re.escape(s) + r": (\d+\.\d+)s"
 
-    for d in d_vals:
+        pattern = get_time_str("centroids-update-time")
+        match = re.search(pattern, output)
+        centroids_time = float(match.group(1))
 
-        print(f"Running pytorch kmeans d={d}...")
+        pattern = get_time_str("kmeans-time")
+        match = re.search(pattern, output)
+        kmeans_time = float(match.group(1))
 
-        # Generate random data 
-        points = torch.tensor(np.random.rand(1, args.n, d), dtype=torch.float32).to(device)
+        pattern = get_time_str("fused-dist-argmin-time")
+        match = re.search(pattern, output)
+        fused_time = float(match.group(1))
 
-        model = KMeans(n_clusters=args.k, max_iter=2)
+        pattern = get_time_str("pwdist-time")
+        match = re.search(pattern, output)
+        pwdist_time = float(match.group(1))
 
-        total_time = 0
-        for _ in range(args.ntrials):
-            stime = time.time()
-            model.fit(points)
-            etime = time.time()
-            total_time += (etime - stime)
+        # Have to use findall otherwise we match with fused-dist-argmin-time :/
+        pattern = get_time_str("argmin-time")
+        match = re.findall(pattern, output)
+        argmin_time = float(match[1])
 
-        t = total_time / args.ntrials
-        print(f"Total time: {t}")
+        pattern = r"kmeans-score: (\d+\.\d+)"
+        match = re.search(pattern, output)
+        score = float(match.group(1))
 
-        pytorch_kmeans_results.add_result(args.n, args.k, d, t, 0)
+        return {"runtime":kmeans_time,
+                "dist_runtime":pwdist_time,
+                "argmin_runtime":argmin_time,
+                "centroids_runtime":centroids_time,
+                "fused_runtime":fused_time,
+                "d":d, "k":k, "n":n,
+                "score":score,
+                }
 
-    pytorch_kmeans_results.save(f"./pytorch-kmeans-n{args.n}-k{args.k}")
+def run_raft_kmeans(args):
+
+    trial_manager = RaftTrial()
+
+    if args.itervar=="d":
+        iter_var = np.arange(2, args.d+1, 2)
+        suffix = f"-n{args.n}-k{args.k}"
+    elif args.itervar=="n":
+        iter_var = np.arange(args.k, args.n+1, 1000)
+        suffix = f"-d{args.d}-k{args.k}"
+    elif args.itervar=="k":
+        iter_var = np.arange(2, args.k+1, 100)
+        suffix = f"-n{args.n}-d{args.d}"
+
+    for var in iter_var:
+
+        if args.itervar=="d":
+            n = args.n
+            k = args.k
+            d = var
+        elif args.itervar=="n":
+            k = args.k
+            d = args.d
+            n = var
+        elif args.itervar=="k":
+            n = args.n
+            d = args.d
+            k = var
+        else:
+            n,d,k=args.n,args.d,args.k
+
+        print(f"Running raft with n={n} d={d} k={k}")
+
+        if args.slurm:
+            cmd = "srun -n 1 -G 1 "
+        else:
+            cmd = ""
+
+        cmd += f"./raft-bench/build/kmeans {n} {d} {k}"
+        print(f"Executing {cmd}")
+
+        try:
+            trial_manager.run_trial(cmd, args.ntrials) #TODO: need to actually average this
+            print(trial_manager.df)
+        except Exception as err:
+            print(err)
+
+    trial_manager.save(f"{args.fname}{suffix}")
 
 
-
-         
 
 def run_cuml_kmeans(args):
     
@@ -478,41 +486,6 @@ def run_our_kmeans_infile(args):
     trial_manager.save(f"./{args.infile}-{args.fname}")
 
 
-def run_distances(args):
-
-    cmd = f"../build/src/bin/gpukmeans -n {args.n} -k {args.k} -m 2  -s 1 --runs {args.ntrials} " 
-
-    # Add srun if using SLURM
-    if args.slurm:
-        cmd = "srun -G 1 -n 1 " + cmd
-
-    if args.dmax:
-        d_vals = np.arange(2, args.dmax+1, 2)
-    else:
-        d_vals = [ args.d ]
-    
-    our_results = Results()
-    distances_results = Results()
-    
-    for d in d_vals:
-
-        cmd_curr = cmd + f"-d {d}"
-        print(f"Executing {cmd_curr}..")
-
-        result=subprocess.run(cmd_curr, shell=True, capture_output=True, text=True)
-        result.check_returncode()
-
-        print(result.stdout)
-
-        pattern = r"time: (\d+\.\d+)"
-        match = re.search(pattern, result.stdout)
-        dist_runtime = float(match.group(1))
-        
-        distances_results.add_result(args.n, args.k, d, dist_runtime, 0)
-        print(distances_results.df)
-    
-    distances_results.save(f"./distances-{args.fname}-n{args.n}-k{args.k}")
-
 
 def get_version_name(fpath):
     if "cuml" in fpath:
@@ -523,6 +496,8 @@ def get_version_name(fpath):
         return "mtx-kmeans-norm"
     elif "shuffle" in fpath:
         return "shuffle-kmeans"
+    elif "raft" in fpath:
+        return "raft-kmeans"
 
 
 def filter_files(args, filenames):
@@ -551,11 +526,12 @@ def plot_runtime(args):
     if args.itervar=="d":
         _markevery=4
     else:
-        _markevery=10
+        _markevery=1
 
     for filename in filenames:
         
         version_name = get_version_name(filename)
+        print(version_name)
         
         with open(filename, 'rb') as file:
             results = pd.read_csv(file) 
@@ -585,7 +561,7 @@ def plot_runtime(args):
     elif args.itervar=="d":
         title_suffix = f"(n={args.n} k={args.k})"
     
-    plt.title(f"Runtime of 2 Iterations of K-means {title_suffix}")
+    plt.title(f"Runtime of 10 Iterations of K-means {title_suffix}")
     plt.legend()
 
     plt.savefig(f"./{args.platform}/kmeans-{title_suffix}", bbox_inches='tight')
@@ -603,7 +579,7 @@ def plot_breakdown(args):
     if args.itervar=="d":
         _markevery=4
     else:
-        _markevery=10
+        _markevery=1
 
     for filename in filenames:
         
@@ -640,8 +616,9 @@ def plot_breakdown(args):
 
         bottom = np.zeros(len(inds))
 
-        for var in ["dist_runtime", "argmin_runtime", "memcpy_runtime", "centroids_runtime"]:
-            plt.bar(np.arange(len(inds)) - (offset) + (offset), data_dict[version][var][0::_markevery], width, 
+        for var in ["dist_runtime", "argmin_runtime", "centroids_runtime"]:
+            plt.bar(np.arange(len(inds)) - (offset) + (offset), 
+                     data_dict[version][var][0::_markevery], width, 
                      label=var,
                      bottom = bottom,
                      color=breakdown_colors[var])
@@ -650,7 +627,7 @@ def plot_breakdown(args):
             plt.xticks(np.arange(len(inds)), labels=inds, rotation=45)
             plt.ylabel("Runtime (s)")
             #plt.yscale("log")
-            plt.title(f"Runtime Breakdown of 2 Iterations of {version} {title_suffix}")
+            plt.title(f"Runtime Breakdown of {version} {title_suffix}")
             plt.legend()
 
         plt.savefig(f"./{args.platform}/{version}-{title_suffix}-breakdown", bbox_inches='tight')
@@ -736,32 +713,43 @@ def plot_kernel_runtime(args):
         
         version = get_version_name(filename)
 
+        if version=="cuml-kmeans":
+            continue
+
         with open(f"./{filename}", 'rb') as file:
+
             results = pd.read_csv(file) 
-            data_dict[version] = results[args.kernel]
+
+            # For non-raft, sum runtime of distances and argmin kernel to compare against fused kernel
+            if args.kernel=="fused_runtime" and version!="raft-kmeans":
+                data_dict[version] = results["dist_runtime"] + results["argmin_runtime"]
+            else:
+                data_dict[version] = results[args.kernel]
+
             inds = results[args.itervar]
 
     name_dict = {"mtx-kmeans-bulk":"bulk",
                  "mtx-kmeans-norm":"norm",
-                 "shuffle-kmeans": "shuffle"}
+                 "shuffle-kmeans": "shuffle",
+                 "raft-kmeans":"raft"}
 
     for version in name_dict.keys():
-        if args.kernel=="centroids_runtime" and version=="mtx-kmeans-norm":
-            continue
         plt.plot(inds, data_dict[version],
                  label=version, color=metadata[version][0],
                  marker=metadata[version][1])
 
     kernelnames = {"dist_runtime": "Pairwise Distances",
-                   "centroids_runtime": "Centroids Update"}
+                   "centroids_runtime": "Centroids Update",
+                   "argmin_runtime": "Argmin",
+                   "fused_runtime": "Fused-Cluster"}
 
     plt.ylabel("Runtime (s)")
     plt.yscale("log")
-    plt.xlabel("d")
-    plt.title(f"Runtime of {kernelnames[args.kernel]} (n={args.n}, k={args.k})")
+    plt.xlabel(args.itervar)
+    plt.title(f"Runtime of {kernelnames[args.kernel]} (n={args.n}, d={args.d})")
     plt.legend()
 
-    plt.savefig(f"./{args.platform}/{args.kernel}-n{args.n}-k{args.k}", bbox_inches='tight')
+    plt.savefig(f"./{args.platform}/{args.kernel}-n{args.n}-d{args.d}", bbox_inches='tight')
             
 
 
@@ -802,6 +790,8 @@ if __name__=="__main__":
         run_torch_kmeans(args)
     elif args.action=="our-kmeans":
         run_our_kmeans(args)
+    elif args.action=="raft-kmeans":
+        run_raft_kmeans(args)
     elif args.action=="our-kmeans-infile":
         run_our_kmeans_infile(args)
     elif args.action=="cuml-kmeans-infile":

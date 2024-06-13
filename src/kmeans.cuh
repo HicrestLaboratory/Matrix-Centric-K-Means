@@ -50,11 +50,24 @@ class Kmeans {
     };
 
 	template <typename IndexT, typename DataT>
-	struct KeyValueIndexOp {
+	struct KeyValueIndexScaleOp {
+     
+        IndexT * d_offsets;
+
 	  __host__ __device__ __forceinline__ IndexT
 	  operator()(const raft::KeyValuePair<IndexT, DataT>& a) const
 	  {
-		return a.key;
+		return a.key + d_offsets[a.key];
+	  }
+	};
+
+	template <typename IndexT, typename DataT>
+	struct KeyValueIndexOp {
+     
+	  __host__ __device__ __forceinline__ IndexT
+	  operator()(const raft::KeyValuePair<IndexT, DataT>& a) const
+	  {
+		return a.key ;
 	  }
 	};
 

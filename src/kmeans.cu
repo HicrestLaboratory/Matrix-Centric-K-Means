@@ -20,8 +20,8 @@
 #include <thrust/functional.h>
 
 #include <raft/core/device_mdarray.hpp>
-//#include <raft/cluster/kmeans.cuh>
-//#include <raft/cluster/kmeans_types.hpp>
+#include <raft/cluster/kmeans.cuh>
+#include <raft/cluster/kmeans_types.hpp>
 #include <raft/core/resources.hpp>
 #include <raft/linalg/map.cuh>
 #include <raft/linalg/coalesced_reduction.cuh>
@@ -350,8 +350,9 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     uint32_t k_pruned = k;
 
 
-    KeyValueIndexOp<uint32_t, DATA_TYPE> conversion_op;
+    KeyValueIndexOp<uint32_t, DATA_TYPE> conversion_op ;
     auto min_cluster_and_distance = raft::make_device_vector<raft::KeyValuePair<uint32_t, DATA_TYPE>, uint32_t>(raft_handle, n);
+    auto min_cluster_and_distance_prev = raft::make_device_vector<raft::KeyValuePair<uint32_t, DATA_TYPE>, uint32_t>(raft_handle, n);
 
     raft::KeyValuePair<uint32_t, DATA_TYPE> initial_value(0, std::numeric_limits<DATA_TYPE>::max());
 
@@ -537,16 +538,33 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                 initial_value,
                 stream,
                 true,
-                [=] __device__(const DATA_TYPE val, const uint32_t i) {
+                [= ] __device__(const DATA_TYPE val, const uint32_t i) {
                     raft::KeyValuePair<uint32_t, DATA_TYPE> pair;
-                    pair.key   = i;
+                    pair.key   = i ;
                     pair.value = val;
                     return pair;
                 },
                 raft::argmin_op{},
                 raft::identity_op{});
 
-        std::cout<<"did reduction"<<std::endl;
+        if (iter>1) {
+            /* If it's past the first iteration, add offsets to min_clusters_and_distance vector so
+             * the indices are correct, and do elementwise argmin with previous min_cluster_and_distance vector
+             */
+            const uint32_t scale_clusters_threads = min((uint32_t)n, (uint32_t)deviceProps->maxThreadsPerBlock);
+            const uint32_t scale_clusters_blocks = ceil((float)n / scale_clusters_threads);
+            //TODO: Fuse these kernels
+            scale_clusters<<<scale_clusters_blocks, scale_clusters_threads>>>
+                            (min_cluster_and_distance.data_handle(), d_offsets_ptr, n);
+
+            kvpair_argmin<<<scale_clusters_blocks, scale_clusters_threads>>>
+                            (min_cluster_and_distance.data_handle(),
+                             min_cluster_and_distance_prev.data_handle(),
+                             n);
+
+        }
+
+
 
         //extract cluster labels from kvpair into d_points_clusters
         cub::TransformInputIterator<uint32_t,
@@ -560,13 +578,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         // Begin centroid pruning 
         if (iter > 1) {
 
-            /* If it's past the first iteration, add offsets to clusters vector so
-             * the indices are correct
-             */
-            const uint32_t scale_clusters_threads = min((uint32_t)n, (uint32_t)deviceProps->maxThreadsPerBlock);
-            const uint32_t scale_clusters_blocks = ceil((float)n / scale_clusters_threads);
-            scale_clusters<<<scale_clusters_blocks, scale_clusters_threads>>>
-                            (d_clusters_ptr, d_offsets_ptr, n);
 
             thrust::fill(raft::resource::get_thrust_policy(raft_handle), 
                             d_stationary_clusters.begin(), d_stationary_clusters.end(), 1);
@@ -605,9 +616,9 @@ uint64_t Kmeans::run (uint64_t maxiter) {
             std::for_each(h_stationary_clusters.begin(), h_stationary_clusters.end(), [](auto& elem)
                     {std::cout<<elem<<std::endl;});
 
-            std::cout<<"MASK"<<std::endl;
-            std::for_each(h_mask.begin(), h_mask.end(), [](auto& elem)
-                    {std::cout<<elem<<std::endl;});
+            //std::cout<<"MASK"<<std::endl;
+            //std::for_each(h_mask.begin(), h_mask.end(), [](auto& elem)
+             //       {std::cout<<elem<<std::endl;});
 
 
 #endif
@@ -664,6 +675,10 @@ uint64_t Kmeans::run (uint64_t maxiter) {
              */
 
         }
+
+        raft::copy(min_cluster_and_distance_prev.data_handle(),
+                   min_cluster_and_distance.data_handle(),
+                   n, stream);
 
         thrust::copy(d_clusters.begin(), d_clusters.end(), d_clusters_prev.begin());
 
@@ -856,7 +871,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
         rmm::device_scalar<DATA_TYPE> d_score(stream);
         rmm::device_uvector<char> workspace(0, stream);
-        /*
         raft::cluster::detail::computeClusterCost(
                                                 raft_handle, 
                                                 min_cluster_and_distance.view(),
@@ -864,10 +878,9 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                                 raft::make_device_scalar_view(d_score.data()),
                                                 raft::value_op{},
                                                 raft::add_op{});
-                                                */
         score = d_score.value(stream);
 
-        if (iter > 1 && (sqrd_norm_err < tol)) {
+        if (iter > 1 && (sqrd_norm_err < tol || k_pruned==0)) {
             converged = iter;
             thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
             break;

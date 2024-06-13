@@ -97,9 +97,29 @@ __global__ void prune_centroids(const DATA_TYPE * d_new_centroids,
                                 const uint32_t d, const uint32_t k,
                                 const uint32_t k_pruned);
 
-__global__ void scale_clusters(uint32_t * d_clusters,
+
+template <typename KV>
+__global__ void scale_clusters(KV d_clusters,
                                uint32_t * d_offsets,
-                               const uint32_t n);
+                               const uint32_t n)
+{
+    const uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid < n) {
+        d_clusters[tid].key += d_offsets[d_clusters[tid].key];
+    }
+}
+
+template <typename KV>
+__global__ void kvpair_argmin(KV * vec1, const KV * vec2, const uint32_t n)
+{
+    const uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid < n) {
+        KV kv1 = vec1[tid];
+        KV kv2 = vec2[tid];
+        vec1[tid] = (kv1.key <= kv2.key) ? kv1 : kv2;
+    }
+}
+
 
 void compute_centroids_gemm(cublasHandle_t& handle,
                             const uint32_t d, const uint32_t n, const uint32_t k,

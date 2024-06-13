@@ -149,14 +149,6 @@ __global__ void prune_centroids(const DATA_TYPE * d_new_centroids,
 }
 
 
-__global__ void scale_clusters(uint32_t * d_clusters,
-                               uint32_t * d_offsets,
-                               const uint32_t n)
-{
-    const uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    d_clusters[tid] += d_offsets[d_clusters[tid]];
-}
-
 
 void compute_centroids_gemm(cublasHandle_t& handle,
                             const uint32_t d, const uint32_t n, const uint32_t k,
