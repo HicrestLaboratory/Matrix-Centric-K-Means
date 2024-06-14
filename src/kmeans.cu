@@ -326,6 +326,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     const raft::resources raft_handle;
 
     const cudaStream_t stream = raft::resource::get_cuda_stream(raft_handle);
+    rmm::device_uvector<char> workspace(0, stream);
 
     /*
     auto d_clusters = raft::make_device_vector<uint32_t>(raft_handle, n);
@@ -392,6 +393,8 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
     raft::linalg::rowNorm(d_points_row_norms, d_points, d, (uint32_t)n, raft::linalg::L2Norm, true, stream);
 
+    auto points_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_points, n, d);
+    auto points_norms_view = raft::make_device_vector_view<DATA_TYPE>(d_points_row_norms, n);
 
     /* Malloc V for later */
     const uint32_t v_rows = k;
@@ -447,6 +450,23 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         cudaEventRecord(e_perf_dist_start);
 
 #endif
+#if USE_RAFT
+
+        rmm::device_uvector<DATA_TYPE> buf(0, stream);
+        auto centroids_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_centroids, k_pruned, d);
+
+        raft::cluster::detail::minClusterAndDistanceCompute<DATA_TYPE, uint32_t>(raft_handle,
+                                                                  points_view,
+                                                                  centroids_view,
+                                                                  min_cluster_and_distance.view(),
+                                                                  points_norms_view,
+                                                                  buf,
+                                                                  raft::distance::DistanceType::L2Expanded,
+                                                                  n, k_pruned, workspace);
+
+
+
+#else
 
         raft::linalg::rowNorm(d_centroids_row_norms, d_centroids, 
                                 d, k_pruned, raft::linalg::L2Norm, true, 
@@ -544,6 +564,21 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                 },
                 raft::argmin_op{},
                 raft::identity_op{});
+#if PERFORMANCES_KERNEL_ARGMIN
+
+        cudaEventRecord(e_perf_argmin_stop);
+        cudaEventSynchronize(e_perf_argmin_stop);
+
+        float e_perf_argmin_ms = 0;
+        cudaEventElapsedTime(&e_perf_argmin_ms, e_perf_argmin_start, e_perf_argmin_stop);
+
+        printf(CYAN "[PERFORMANCE]" RESET " clusters_argmin_shfl time: %.8f\n", e_perf_argmin_ms / 1000);
+
+        cudaEventDestroy(e_perf_argmin_stop);
+        cudaEventDestroy(e_perf_argmin_start);
+
+#endif
+#endif
 
 #if PRUNE_CENTROIDS
         cudaEvent_t e_perf_prune_start, e_perf_prune_stop;
@@ -708,20 +743,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                             k,
                                             stream);
 
-#if PERFORMANCES_KERNEL_ARGMIN
-
-        cudaEventRecord(e_perf_argmin_stop);
-        cudaEventSynchronize(e_perf_argmin_stop);
-
-        float e_perf_argmin_ms = 0;
-        cudaEventElapsedTime(&e_perf_argmin_ms, e_perf_argmin_start, e_perf_argmin_stop);
-
-        printf(CYAN "[PERFORMANCE]" RESET " clusters_argmin_shfl time: %.8f\n", e_perf_argmin_ms / 1000);
-
-        cudaEventDestroy(e_perf_argmin_stop);
-        cudaEventDestroy(e_perf_argmin_start);
-
-#endif
 
 #if DEBUG_KERNEL_ARGMIN
 
@@ -882,7 +903,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 #endif
 
         rmm::device_scalar<DATA_TYPE> d_score(stream);
-        rmm::device_uvector<char> workspace(0, stream);
         raft::cluster::detail::computeClusterCost(
                                                 raft_handle, 
                                                 min_cluster_and_distance.view(),
