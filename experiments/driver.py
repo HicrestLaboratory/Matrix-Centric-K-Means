@@ -201,7 +201,7 @@ def run_raft_kmeans(args):
         iter_var = np.arange(args.k, args.n+1, 1000)
         suffix = f"-d{args.d}-k{args.k}"
     elif args.itervar=="k":
-        iter_var = np.arange(2, args.k+1, 100)
+        iter_var = np.arange(500, args.k+2, 500)
         suffix = f"-n{args.n}-d{args.d}"
 
     for var in iter_var:
@@ -418,7 +418,7 @@ def run_our_kmeans(args):
         cmd += f"-d {args.d} "
         suffix = f"-d{args.d}-k{args.k}"
     elif args.itervar=="k":
-        iter_var = np.arange(2, args.k+1, 100)
+        iter_var = np.arange(500, args.k+2, 500)
         cmd += f"-n {args.n} "
         cmd += f"-d {args.d} "
         suffix = f"-n{args.n}-d{args.d}"
@@ -552,7 +552,7 @@ def plot_runtime(args):
 
     plt.xlabel(args.itervar)
     plt.ylabel("Runtime (s)")
-    plt.yscale("log")
+    #plt.yscale("log")
 
     if args.itervar=="n":
         title_suffix = f"(d={args.d} k={args.k})"
@@ -769,7 +769,7 @@ if __name__=="__main__":
     parser.add_argument("--itervar", type=str)
     parser.add_argument("--bin", type=str)
     parser.add_argument("--ntrials", type=int, default=10)
-    parser.add_argument("--maxiters", type=int, default=2)
+    parser.add_argument("--maxiters", type=int, default=10)
     parser.add_argument("--infile", type=str)
     
     args = parser.parse_args()

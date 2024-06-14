@@ -99,15 +99,19 @@ __global__ void prune_centroids(const DATA_TYPE * d_new_centroids,
 
 
 template <typename KV>
-__global__ void scale_clusters(KV d_clusters,
-                               uint32_t * d_offsets,
-                               const uint32_t n)
+__global__ void scale_clusters_and_argmin(KV d_clusters,
+                                       const KV d_clusters_prev,
+                                       uint32_t * d_offsets,
+                                       const uint32_t n)
 {
     const uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid < n) {
-        d_clusters[tid].key += d_offsets[d_clusters[tid].key];
+        const uint32_t scaled_cluster = d_clusters[tid].key + d_offsets[d_clusters[tid].key];
+        const uint32_t prev_cluster = d_clusters_prev[tid].key;
+        d_clusters[tid].key = (d_clusters[tid].value < d_clusters_prev[tid].value) ? scaled_cluster : prev_cluster;
     }
 }
+
 
 template <typename KV>
 __global__ void kvpair_argmin(KV * vec1, const KV * vec2, const uint32_t n)

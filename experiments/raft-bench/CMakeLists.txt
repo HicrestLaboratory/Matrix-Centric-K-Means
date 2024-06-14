@@ -11,7 +11,9 @@
 # or implied. See the License for the specific language governing permissions and limitations under
 # the License.
 
-cmake_minimum_required(VERSION 3.26.4 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.24.3 FATAL_ERROR)
+set(CMAKE_CXX_COMPILER CC)
+set(CMAKE_CXX_STANDARD 17)
 
 # ------------- configure rapids-cmake --------------#
 

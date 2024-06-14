@@ -344,6 +344,12 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     uint32_t * d_stationary_clusters_ptr = thrust::raw_pointer_cast(d_stationary_clusters.data());
     uint32_t * d_offsets_ptr = thrust::raw_pointer_cast(d_offsets.data());
 
+    auto one_vec = raft::make_device_vector<uint32_t>(raft_handle, n);
+
+    thrust::fill(raft::resource::get_thrust_policy(raft_handle),
+                    one_vec.data_handle(),
+                    one_vec.data_handle() + n,
+                    1);
 
     /* Number of centroids after pruning stationary centroids */
     auto d_k_pruned = raft::make_device_scalar(raft_handle, k);
@@ -361,15 +367,8 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                min_cluster_and_distance.data_handle() + min_cluster_and_distance.size(),
                initial_value);
 
-    thrust::fill(raft::resource::get_thrust_policy(raft_handle),
-               d_clusters_prev.begin(),
-               d_clusters_prev.end() ,
-               k+1);
-
-
     DATA_TYPE* d_distances;
     CHECK_CUDA_ERROR(cudaMalloc(&d_distances, n * k * sizeof(DATA_TYPE)));
-
 
     uint32_t* d_clusters_len;
     CHECK_CUDA_ERROR(cudaMalloc(&d_clusters_len, k * sizeof(uint32_t)));
@@ -395,8 +394,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     const uint32_t v_rows = k;
     const uint32_t v_cols = n;
     const uint32_t v_size = v_rows*v_cols;
-    DATA_TYPE * d_V;
-    CHECK_CUDA_ERROR(cudaMalloc(&d_V, v_size*sizeof(DATA_TYPE)));
 
 
     DATA_TYPE * d_V_vals;
@@ -553,14 +550,9 @@ uint64_t Kmeans::run (uint64_t maxiter) {
              */
             const uint32_t scale_clusters_threads = min((uint32_t)n, (uint32_t)deviceProps->maxThreadsPerBlock);
             const uint32_t scale_clusters_blocks = ceil((float)n / scale_clusters_threads);
-            //TODO: Fuse these kernels
-            scale_clusters<<<scale_clusters_blocks, scale_clusters_threads>>>
-                            (min_cluster_and_distance.data_handle(), d_offsets_ptr, n);
-
-            kvpair_argmin<<<scale_clusters_blocks, scale_clusters_threads>>>
-                            (min_cluster_and_distance.data_handle(),
-                             min_cluster_and_distance_prev.data_handle(),
-                             n);
+            scale_clusters_and_argmin<<<scale_clusters_blocks, scale_clusters_threads>>>
+                            (min_cluster_and_distance.data_handle(), min_cluster_and_distance_prev.data_handle(),
+                             d_offsets_ptr, n);
 
         }
 
@@ -684,12 +676,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
 
         //reduce_cols_by_key to compute cluster d_clusters_len 
-        auto one_vec = raft::make_device_vector<uint32_t>(raft_handle, n);
-
-        thrust::fill(raft::resource::get_thrust_policy(raft_handle),
-                        one_vec.data_handle(),
-                        one_vec.data_handle() + n,
-                        1);
 
         raft::linalg::reduce_cols_by_key(one_vec.data_handle(),
                                             clusters,
@@ -881,10 +867,13 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         score = d_score.value(stream);
 
         if (iter > 1 && (sqrd_norm_err < tol || k_pruned==0)) {
+            continue;
             converged = iter;
             thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
             break;
-        } else if (iter==maxiter) {
+        } 
+
+        if (iter==maxiter) {
             thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
         }
 
