@@ -4,11 +4,14 @@ from plotly.offline import plot
 import pandas as pd
 import argparse
 
+from sklearn.decomposition import PCA
+
+
 # print(px.colors.qualitative.Alphabet_r)
 # exit(0)
 
 argParser = argparse.ArgumentParser()
-argParser.add_argument("-d", "--dimensions", help="The number of dimensions of the points", type=int, choices=[2,3], required=True)
+argParser.add_argument("-d", "--dimensions", help="The number of dimensions of the points", type=int,  required=True)
 argParser.add_argument("-f", "--input-files", help="The CSV file(s) to read from", type=str, nargs='+', required=True)
 args = argParser.parse_args()
 
@@ -19,12 +22,21 @@ figures = []
 
 for i in range(files_count):
   df = pd.read_csv(args.input_files[i])
+  print(df)
   plt = None
 
   if args.dimensions == 2:
     plt = px.scatter(df, x=df.columns[1], y=df.columns[2], color=df.columns[0])
   elif args.dimensions == 3:
     plt = px.scatter_3d(df, x=df.columns[1], y=df.columns[2], z=df.columns[3], color=df.columns[0])
+  else:
+    # PCA time
+    pca = PCA(n_components=2)
+    X = df.iloc[:, 1:]
+    pca.fit(X)
+    X = pca.transform(X)
+    plt = px.scatter(df, x=X[:, 0], y=X[:,1], color=df.columns[0])
+
 
   plt.update_layout(title_text=args.input_files[i])
   figures.append(plt)

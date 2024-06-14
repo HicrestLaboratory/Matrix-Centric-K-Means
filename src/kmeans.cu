@@ -29,6 +29,8 @@
 #include <raft/linalg/map_then_reduce.cuh>
 #include <raft/linalg/norm.cuh>
 #include <raft/linalg/subtract.cuh>
+#include <raft/linalg/matrix_vector.cuh>
+
 #include <rmm/device_scalar.hpp>
 
 
@@ -370,6 +372,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     DATA_TYPE* d_distances;
     CHECK_CUDA_ERROR(cudaMalloc(&d_distances, n * k * sizeof(DATA_TYPE)));
 
+
     uint32_t* d_clusters_len;
     CHECK_CUDA_ERROR(cudaMalloc(&d_clusters_len, k * sizeof(uint32_t)));
 
@@ -386,8 +389,8 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     CHECK_CUDA_ERROR(cudaMalloc(&d_points_row_norms, sizeof(DATA_TYPE)*n));
     CHECK_CUDA_ERROR(cudaMalloc(&d_centroids_row_norms, sizeof(DATA_TYPE) * k));
 
-    raft::linalg::rowNorm(d_points_row_norms, d_points, d, (uint32_t)n, raft::linalg::L2Norm, true, stream);
 
+    raft::linalg::rowNorm(d_points_row_norms, d_points, d, (uint32_t)n, raft::linalg::L2Norm, true, stream);
 
 
     /* Malloc V for later */
@@ -445,8 +448,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
 #endif
 
-        std::cout<<k_pruned<<std::endl;
-
         raft::linalg::rowNorm(d_centroids_row_norms, d_centroids, 
                                 d, k_pruned, raft::linalg::L2Norm, true, 
                                 stream);
@@ -457,6 +458,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                       d_centroids, d_centroids_row_norms,
                                       d_distances);
 
+        auto pw_dist_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_distances, n, k_pruned);
 
 #if PERFORMANCES_KERNEL_DISTANCES
 
@@ -527,11 +529,10 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 		//CHECK_CUDA_ERROR(cudaMemset(d_clusters_len, 0, k * sizeof(uint32_t)));
 
 
-        auto pw_dist_const = raft::make_device_matrix_view<const DATA_TYPE, uint32_t>(d_distances, k, n);
 
         raft::linalg::coalescedReduction(
                 min_cluster_and_distance.data_handle(),
-                pw_dist_const.data_handle(), (uint32_t)k_pruned, (uint32_t)n,
+                pw_dist_view.data_handle(), (uint32_t)k_pruned, (uint32_t)n,
                 initial_value,
                 stream,
                 true,
@@ -544,6 +545,13 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                 raft::argmin_op{},
                 raft::identity_op{});
 
+#if PRUNE_CENTROIDS
+        cudaEvent_t e_perf_prune_start, e_perf_prune_stop;
+
+        cudaEventCreate(&e_perf_prune_start);
+        cudaEventCreate(&e_perf_prune_stop);
+        cudaEventRecord(e_perf_prune_start);
+
         if (iter>1) {
             /* If it's past the first iteration, add offsets to min_clusters_and_distance vector so
              * the indices are correct, and do elementwise argmin with previous min_cluster_and_distance vector
@@ -555,6 +563,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                              d_offsets_ptr, n);
 
         }
+#endif
 
 
 
@@ -564,8 +573,10 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                     raft::KeyValuePair<uint32_t, DATA_TYPE>*>
         clusters(min_cluster_and_distance.data_handle(), conversion_op);
 
+#if PRUNE_CENTROIDS
 
         thrust::copy(clusters, clusters+n, d_clusters.begin());
+
 
         // Begin centroid pruning 
         if (iter > 1) {
@@ -673,6 +684,18 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                    n, stream);
 
         thrust::copy(d_clusters.begin(), d_clusters.end(), d_clusters_prev.begin());
+
+        cudaEventRecord(e_perf_prune_stop);
+        cudaEventSynchronize(e_perf_prune_stop);;
+        float e_perf_prune_ms = 0;
+        cudaEventElapsedTime(&e_perf_prune_ms, e_perf_prune_start, e_perf_prune_stop);
+
+        printf(CYAN "[PERFORMANCE]" RESET " prune_centroids time: %.8f\n", e_perf_prune_ms / 1000);
+
+        cudaEventDestroy(e_perf_prune_start);
+        cudaEventDestroy(e_perf_prune_stop);
+
+#endif
 
 
         //reduce_cols_by_key to compute cluster d_clusters_len 
@@ -841,6 +864,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         DATA_TYPE sqrd_norm_err = 0;
         raft::copy(&sqrd_norm_err, sqrd_norm.data_handle(), sqrd_norm.size(), stream);
 
+#if PRUNE_CENTROIDS
         if (iter > 1) {
             const uint32_t prune_threads = min((uint32_t)deviceProps->maxThreadsPerBlock,
                                                (uint32_t)(k_pruned * d));
@@ -853,7 +877,9 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         } else {
             CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_new_centroids, CENTROIDS_BYTES, cudaMemcpyDeviceToDevice));
         }
-
+#else
+        CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_new_centroids, CENTROIDS_BYTES, cudaMemcpyDeviceToDevice));
+#endif
 
         rmm::device_scalar<DATA_TYPE> d_score(stream);
         rmm::device_uvector<char> workspace(0, stream);
@@ -869,11 +895,13 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         if (iter > 1 && (sqrd_norm_err < tol || k_pruned==0)) {
             continue;
             converged = iter;
+            thrust::copy(clusters, clusters+n, d_clusters.begin());
             thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
             break;
         } 
 
         if (iter==maxiter) {
+            thrust::copy(clusters, clusters+n, d_clusters.begin());
             thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
         }
 

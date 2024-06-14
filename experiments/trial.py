@@ -17,10 +17,10 @@ class Trial:
     def __init__(self):
         self.df = pd.DataFrame(columns=self.features)
     
-    def run_trial(self, cmd):
+    def run_trial(self, cmd, n_iters):
 
         result = self.run_command(cmd)
-        input_dict = self.parse_output(result)
+        input_dict = self.parse_output(result, n_iters)
         self.add_sample(input_dict)
 
     
@@ -46,10 +46,10 @@ class Trial:
 
     
     def save(self, fname):
-        self.df.to_csv(fname)
+        self.df.to_csv(fname+".csv")
     
 
-    def parse_output(self, result):
+    def parse_output(self, result, n_iters):
         return # should be overridden by subclasses
                 
 
