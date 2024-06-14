@@ -112,6 +112,18 @@ __global__ void scale_clusters_and_argmin(KV d_clusters,
     }
 }
 
+template <typename KV>
+__global__ void scale_clusters(KV d_clusters,
+                               uint32_t * d_offsets,
+                               const uint32_t n)
+{
+    const uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid < n) {
+        d_clusters[tid].key += d_offsets[d_clusters[tid].key];
+    }
+}
+
+
 
 template <typename KV>
 __global__ void kvpair_argmin(KV * vec1, const KV * vec2, const uint32_t n)
