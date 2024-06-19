@@ -212,6 +212,16 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
                                     DATA_TYPE * d_distances);
 
 
+void compute_gemm_distances_bellavita(const cusparseHandle_t& handle,
+                                        const uint32_t d, 
+                                        const uint32_t n,
+                                        const uint32_t k,
+                                        const DATA_TYPE * d_points_row_norms,
+                                        const DATA_TYPE * d_centroids_row_norms,
+                                        const cusparseDnMatDescr_t& B,
+                                        const cusparseSpMatDescr_t& V,
+                                        cusparseDnMatDescr_t& D,
+                                        DATA_TYPE * d_distances);
 
 __global__ void check_convergence( const DATA_TYPE * d_centroids,
                                     const DATA_TYPE * d_last_centroids,

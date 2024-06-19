@@ -64,6 +64,9 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
 		deviceProps(_deviceProps),
         initMethod(_initMethod)
 {
+
+    CHECK_CUBLAS_ERROR(cublasCreate(&cublasHandle));
+
 	if (seed) {
 		seed_seq s{*seed};
 		generator = new mt19937(s);
@@ -106,6 +109,42 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
     cudaEventDestroy(e_perf_memcpy_start);
     cudaEventDestroy(e_perf_memcpy_stop);
 #endif
+
+    /* Init B */
+    CHECK_CUDA_ERROR(cudaMalloc(&d_B, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
+
+#if PERFORMANCES_BMULT
+    cudaEvent_t e_perf_bmult_start, e_perf_bmult_stop;
+
+    cudaEventCreate(&e_perf_bmult_start);
+    cudaEventCreate(&e_perf_bmult_stop);
+    cudaEventRecord(e_perf_bmult_start);
+#endif
+    //TODO: move this to main loop
+    float b_alpha = -2.0;
+    float b_beta = 0.0;
+    CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle, 
+                                    CUBLAS_OP_T,
+                                    CUBLAS_OP_N,
+                                    d, n, d,
+                                    &b_alpha,
+                                    d_points, d,
+                                    d_points, d,
+                                    &b_beta,
+                                    d_B, n));
+#if PERFORMANCES_BMULT
+
+    cudaEventRecord(e_perf_bmult_stop);
+    cudaEventSynchronize(e_perf_bmult_stop);
+
+    float e_perf_bmult_ms = 0;
+    cudaEventElapsedTime(&e_perf_bmult_ms, e_perf_bmult_start, e_perf_bmult_stop);
+    printf(CYAN "[PERFORMANCE]" RESET " b-mult time: %.8f\n", e_perf_bmult_ms / 1000);
+
+    cudaEventDestroy(e_perf_bmult_start);
+    cudaEventDestroy(e_perf_bmult_stop);
+#endif
+
 }
 
 Kmeans::~Kmeans () {
@@ -115,6 +154,7 @@ Kmeans::~Kmeans () {
 	CHECK_CUDA_ERROR(cudaFree(d_centroids));
     CHECK_CUDA_ERROR(cudaFree(d_new_centroids));
 	CHECK_CUDA_ERROR(cudaFree(d_points));
+    CHECK_CUDA_ERROR(cudaFree(d_B));
 	if (h_centroids_matrix != NULL) {
 		CHECK_CUDA_ERROR(cudaFreeHost(h_centroids_matrix));
 	}
@@ -275,15 +315,12 @@ void Kmeans::init_centroids_plusplus(DATA_TYPE * d_points)
     CHECK_CUDA_ERROR(cudaFree(tmp_dist));
     CHECK_CUDA_ERROR(cudaFree(dist));
     CHECK_CUDA_ERROR(cudaFree(d_tmp_storage));
-    //CHECK_CUDA_ERROR(cudaFree(d_argmax));
-    
 
 }
 
 uint64_t Kmeans::run (uint64_t maxiter) {
     uint64_t converged = maxiter;
 
-    CHECK_CUBLAS_ERROR(cublasCreate(&cublasHandle));
 
 
 #if PERFORMANCES_CENTROIDS_INIT 
@@ -328,24 +365,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     const cudaStream_t stream = raft::resource::get_cuda_stream(raft_handle);
     rmm::device_uvector<char> workspace(0, stream);
 
-    /*
-    auto d_clusters = raft::make_device_vector<uint32_t>(raft_handle, n);
-    auto d_clusters_prev = raft::make_device_vector<uint32_t>(raft_handle, n);
-    auto d_clusters_mask = raft::make_device_vector<uint32_t>(raft_handle, n);
-    auto d_stationary_clusters = raft::make_device_vector<uint32_t>(raft_handle, k);
-    */
     thrust::device_vector<uint32_t> d_clusters(n);
-    thrust::device_vector<uint32_t> d_clusters_prev(n);
-    thrust::device_vector<int32_t> d_clusters_mask(n);
-    thrust::device_vector<uint32_t> d_stationary_clusters(k);
-    thrust::device_vector<uint32_t> d_offsets(k);
-
-    //TODO: Fix this please
-    uint32_t * d_clusters_ptr = thrust::raw_pointer_cast(d_clusters.data());
-    uint32_t * d_clusters_prev_ptr = thrust::raw_pointer_cast(d_clusters_prev.data());
-    int32_t * d_clusters_mask_ptr = thrust::raw_pointer_cast(d_clusters_mask.data());
-    uint32_t * d_stationary_clusters_ptr = thrust::raw_pointer_cast(d_stationary_clusters.data());
-    uint32_t * d_offsets_ptr = thrust::raw_pointer_cast(d_offsets.data());
 
     auto one_vec = raft::make_device_vector<uint32_t>(raft_handle, n);
 
@@ -361,7 +381,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
     KeyValueIndexOp<uint32_t, DATA_TYPE> conversion_op ;
     auto min_cluster_and_distance = raft::make_device_vector<raft::KeyValuePair<uint32_t, DATA_TYPE>, uint32_t>(raft_handle, n);
-    auto min_cluster_and_distance_prev = raft::make_device_vector<raft::KeyValuePair<uint32_t, DATA_TYPE>, uint32_t>(raft_handle, n);
 
     raft::KeyValuePair<uint32_t, DATA_TYPE> initial_value(0, std::numeric_limits<DATA_TYPE>::max());
 
@@ -380,7 +399,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
     uint64_t iter = 0;
 
-
     cusparseHandle_t cusparseHandle;
     CHECK_CUSPARSE_ERROR(cusparseCreate(&cusparseHandle));
 
@@ -390,17 +408,15 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     CHECK_CUDA_ERROR(cudaMalloc(&d_points_row_norms, sizeof(DATA_TYPE)*n));
     CHECK_CUDA_ERROR(cudaMalloc(&d_centroids_row_norms, sizeof(DATA_TYPE) * k));
 
-
     raft::linalg::rowNorm(d_points_row_norms, d_points, d, (uint32_t)n, raft::linalg::L2Norm, true, stream);
 
-    auto points_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_points, n, d);
-    auto points_norms_view = raft::make_device_vector_view<DATA_TYPE>(d_points_row_norms, n);
+
+
 
     /* Malloc V for later */
     const uint32_t v_rows = k;
     const uint32_t v_cols = n;
     const uint32_t v_size = v_rows*v_cols;
-
 
     DATA_TYPE * d_V_vals;
     int32_t * d_V_rowinds;
@@ -412,6 +428,8 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 	
     cusparseSpMatDescr_t V_descr;
     cusparseDnMatDescr_t P_descr;
+    cusparseDnMatDescr_t B_descr;
+    cusparseDnMatDescr_t D_descr;
     cusparseDnMatDescr_t C_descr;
 
     CHECK_CUSPARSE_ERROR(cusparseCreateCsc(&V_descr,
@@ -430,11 +448,24 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                               CUDA_R_32F,
                                               CUSPARSE_ORDER_ROW));
 
+    CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&B_descr,
+                                            n, n, n,
+                                            d_B,
+                                            CUDA_R_32F,
+                                            CUSPARSE_ORDER_ROW));
+
+    CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&D_descr,
+                                             k, n, n,
+                                             d_distances,
+                                             CUDA_R_32F,
+                                             CUSPARSE_ORDER_ROW));
+
     CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&C_descr,
                                               k, d, d,
                                               d_new_centroids,
                                               CUDA_R_32F,
                                               CUSPARSE_ORDER_ROW));
+
 
 
     /* MAIN LOOP */
@@ -450,33 +481,29 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         cudaEventRecord(e_perf_dist_start);
 
 #endif
-#if USE_RAFT
-
-        rmm::device_uvector<DATA_TYPE> buf(0, stream);
-        auto centroids_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_centroids, k_pruned, d);
-
-        raft::cluster::detail::minClusterAndDistanceCompute<DATA_TYPE, uint32_t>(raft_handle,
-                                                                  points_view,
-                                                                  centroids_view,
-                                                                  min_cluster_and_distance.view(),
-                                                                  points_norms_view,
-                                                                  buf,
-                                                                  raft::distance::DistanceType::L2Expanded,
-                                                                  n, k_pruned, workspace);
-
-
-
-#else
 
         raft::linalg::rowNorm(d_centroids_row_norms, d_centroids, 
                                 d, k_pruned, raft::linalg::L2Norm, true, 
                                 stream);
 
-        compute_gemm_distances_arizona(cublasHandle, 
-                                      d, n, k_pruned,
-                                      d_points, d_points_row_norms,
-                                      d_centroids, d_centroids_row_norms,
-                                      d_distances);
+        if (iter==1) {
+            compute_gemm_distances_arizona(cublasHandle, 
+                                          d, n, k_pruned,
+                                          d_points, d_points_row_norms,
+                                          d_centroids, d_centroids_row_norms,
+                                          d_distances);
+        } else {
+
+            /* Bellavita K-Means */
+            compute_gemm_distances_bellavita(cusparseHandle, 
+                                            d, n, k_pruned,
+                                            d_points_row_norms,
+                                            d_centroids_row_norms,
+                                            B_descr, V_descr,
+                                            D_descr, d_distances);
+
+
+        }
 
         auto pw_dist_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_distances, n, k_pruned);
 
@@ -545,11 +572,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
 
 #endif
 
-
-		//CHECK_CUDA_ERROR(cudaMemset(d_clusters_len, 0, k * sizeof(uint32_t)));
-
-
-
         raft::linalg::coalescedReduction(
                 min_cluster_and_distance.data_handle(),
                 pw_dist_view.data_handle(), (uint32_t)k_pruned, (uint32_t)n,
@@ -564,6 +586,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                 },
                 raft::argmin_op{},
                 raft::identity_op{});
+
 #if PERFORMANCES_KERNEL_ARGMIN
 
         cudaEventRecord(e_perf_argmin_stop);
@@ -577,7 +600,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         cudaEventDestroy(e_perf_argmin_stop);
         cudaEventDestroy(e_perf_argmin_start);
 
-#endif
 #endif
 
 #if PRUNE_CENTROIDS
@@ -913,7 +935,7 @@ uint64_t Kmeans::run (uint64_t maxiter) {
         score = d_score.value(stream);
 
         if (iter > 1 && (sqrd_norm_err < tol || k_pruned==0)) {
-            continue;
+            continue; //make sure we run for maxiters for testing purposes 
             converged = iter;
             thrust::copy(clusters, clusters+n, d_clusters.begin());
             thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
@@ -964,6 +986,13 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     CHECK_CUDA_ERROR(cudaFree(d_V_vals));
     CHECK_CUDA_ERROR(cudaFree(d_V_rowinds));
     CHECK_CUDA_ERROR(cudaFree(d_V_col_offsets));
+
+    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(P_descr)); 
+    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(C_descr)); 
+    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(B_descr)); 
+    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(D_descr)); 
+    CHECK_CUSPARSE_ERROR(cusparseDestroySpMat(V_descr)); 
+
     CHECK_CUSPARSE_ERROR(cusparseDestroy(cusparseHandle));
 
     CHECK_CUBLAS_ERROR(cublasDestroy(cublasHandle));

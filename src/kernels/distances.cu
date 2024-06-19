@@ -650,6 +650,63 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
 }
 
 
+void compute_gemm_distances_bellavita(const cusparseHandle_t& handle,
+                                        const uint32_t d, 
+                                        const uint32_t n,
+                                        const uint32_t k,
+                                        const DATA_TYPE * d_points_row_norms,
+                                        const DATA_TYPE * d_centroids_row_norms,
+                                        const cusparseDnMatDescr_t& B,
+                                        const cusparseSpMatDescr_t& V,
+                                        cusparseDnMatDescr_t& D,
+                                        DATA_TYPE * d_distances)
+{
+
+    const DATA_TYPE alpha = 1.0;
+    const DATA_TYPE beta = 0.0;
+    
+    size_t buff_size = 0;
+
+    CHECK_CUSPARSE_ERROR(cusparseSpMM_bufferSize(handle,
+                                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                                  &alpha,
+                                                  V,
+                                                  B,
+                                                  &beta,
+                                                  D,
+                                                  CUDA_R_32F,
+                                                  CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                                  &buff_size));
+    
+    void * d_buff;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_buff, buff_size));
+
+    CHECK_CUSPARSE_ERROR(cusparseSpMM(handle,
+                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                      &alpha,
+                                      V,
+                                      B,
+                                      &beta,
+                                      D,
+                                      CUDA_R_32F,
+                                      CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                      d_buff));
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    CHECK_CUSPARSE_ERROR(cusparseDnMatGetValues(D, (void**)&d_distances));
+
+    CHECK_CUDA_ERROR(cudaFree(d_buff));
+
+    const uint32_t block_dim = min(n*k, 1024); //TODO Replace with device props max threads 
+    const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
+
+    add_norm_mtx_row<<<grid_dim, block_dim>>>(n, k, d_points_row_norms, d_distances);
+    add_norm_mtx_col<<<grid_dim, block_dim>>>(n, k, d_centroids_row_norms, d_distances);
+
+}
+
 
 
 

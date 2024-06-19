@@ -104,6 +104,8 @@ class Kmeans {
     DATA_TYPE* d_points;
     DATA_TYPE* d_centroids;
 
+    DATA_TYPE* d_B;
+
 
 
     DATA_TYPE score;
