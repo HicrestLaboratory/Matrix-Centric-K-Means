@@ -126,7 +126,7 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
     CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle, 
                                     CUBLAS_OP_T,
                                     CUBLAS_OP_N,
-                                    d, n, d,
+                                    n, n, d,
                                     &b_alpha,
                                     d_points, d,
                                     d_points, d,
@@ -455,10 +455,10 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                             CUSPARSE_ORDER_ROW));
 
     CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&D_descr,
-                                             k, n, n,
+                                             k, n, k,
                                              d_distances,
                                              CUDA_R_32F,
-                                             CUSPARSE_ORDER_ROW));
+                                             CUSPARSE_ORDER_COL));
 
     CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&C_descr,
                                               k, d, d,
