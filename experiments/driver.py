@@ -141,20 +141,6 @@ class KmeansTrial(Trial):
                 }
 
 
-class CuMLTrial(Trial):
-
-    features = ["runtime", 
-                "dist_runtime",
-                "argmin_runtime",
-                "centroids_runtime",
-                "memcpy_runtime",
-                "d", "k", "n", 
-                "mem",
-                "name",
-                "score"]
-
-    def __init__(self):
-        super().__init__()
 
 
 class RaftTrial(Trial):
@@ -237,7 +223,7 @@ def run_raft_kmeans(args):
         iter_var = np.arange(args.k, args.n+1, 1000)
         suffix = f"-d{args.d}-k{args.k}"
     elif args.itervar=="k":
-        iter_var = np.arange(100, args.k+2, 100)
+        iter_var = np.arange(200, args.k+2, 200)
         suffix = f"-n{args.n}-d{args.d}"
 
     for var in iter_var:
@@ -279,162 +265,6 @@ def run_raft_kmeans(args):
 
 
 
-def run_cuml_kmeans(args):
-    
-    from cuml.cluster import KMeans
-
-    import cudf
-
-    trial_manager = CuMLTrial()
-
-    if args.itervar=="d":
-        iter_var = np.arange(2, args.d+1, 2)
-        suffix = f"-n{args.n}-k{args.k}"
-    elif args.itervar=="n":
-        iter_var = np.arange(args.k, args.n+1, 1000)
-        suffix = f"-d{args.d}-k{args.k}"
-    elif args.itervar=="k":
-        iter_var = np.arange(2, args.k+1, 100)
-        suffix = f"-n{args.n}-d{args.d}"
-    else:
-        iter_var = [1]
-        suffix = f"-n{args.n}-d{args.d}-k{args.k}"
-
-    for var in iter_var:
-
-        if args.itervar=="d":
-            n = args.n
-            k = args.k
-            d = var
-        elif args.itervar=="n":
-            k = args.k
-            d = args.d
-            n = var
-        elif args.itervar=="k":
-            n = args.n
-            d = args.d
-            k = var
-        else:
-            n,d,k=args.n,args.d,args.k
-
-        print(f"Running cuml n={n}, k={k}, d={d}")
-
-        # Generate random data 
-        if args.infile==None:
-            points = np.random.rand(n, d)
-        else:
-            points = pd.read_csv(args.infile)
-            n = points.shape[0]
-            d = points.shape[1]
-        d_points = cudf.DataFrame(points)
-
-        memcpy_time = 0 
-        compute_time = 0
-        
-        # Init Kmeans
-        kmeans = KMeans(n_clusters=k, max_iter=args.maxiters, verbose=6, init="random")
-
-        # Warm up
-        kmeans.fit(d_points)
-
-        # Run Kmeans
-        for i in range(args.ntrials):
-
-            stime = time.time()
-            d_points = cudf.DataFrame(points)
-            etime = time.time()
-
-            if i>0:
-                memcpy_time += (etime - stime)
-
-            stime = time.time()
-            kmeans.fit(d_points)
-            etime = time.time()
-
-            if i>0:
-                compute_time += (etime - stime)
-        
-        compute_time = compute_time / (args.ntrials - 1)
-        memcpy_time = memcpy_time / (args.ntrials - 1)
-        score = kmeans.score(d_points)
-
-        print(f"Compute Time: {compute_time}s")
-        print(f"Memcpy Time: {memcpy_time}s")
-        print(f"Score: {score}")
-
-        trial_manager.add_sample({"memcpy_runtime":memcpy_time,
-                                  "runtime": compute_time,
-                                  "score": score,
-                                  "d":d, "n":n, "k":k,
-                                  "name":None}
-                                 )
-        print(trial_manager.df)
-
-    trial_manager.save(f"./{args.fname}{suffix}")
-
-
-def run_cuml_kmeans_infile(args):
-    from cuml.cluster import KMeans
-
-    import cudf
-
-    trial_manager = CuMLTrial()
-
-    points = pd.read_csv(args.infile)
-
-    n = points.shape[0]
-    d = points.shape[1]
-    k_vec = np.arange(100, args.k, 100) 
-
-
-    print(f"Running cuml on {args.infile}, n={n} d={d}")
-
-    d_points = cudf.DataFrame(points)
-
-    memcpy_time = 0 
-    compute_time = 0
-    
-    # Init Kmeans
-    for k in k_vec:
-        kmeans = KMeans(n_clusters=k, max_iter=args.maxiters, verbose=6, init="random")
-
-        # Warm up
-        kmeans.fit(d_points)
-
-        # Run Kmeans
-        for i in range(args.ntrials):
-
-            stime = time.time()
-            d_points = cudf.DataFrame(points)
-            etime = time.time()
-
-            if (i > 0):
-                memcpy_time += (etime - stime)
-
-            stime = time.time()
-            kmeans.fit(d_points)
-            etime = time.time()
-
-            if (i > 0):
-                compute_time += (etime - stime)
-
-        compute_time /= (args.ntrials - 1)
-        memcpy_time /= (args.ntrials - 1)
-        score = kmeans.score(d_points)
-        
-        print(f"Compute Time: {compute_time}s")
-        print(f"Memcpy Time: {memcpy_time}s")
-        print(f"Score: {score}")
-
-        trial_manager.add_sample({"memcpy_runtime":memcpy_time,
-                                  "runtime": compute_time,
-                                  "score": score,
-                                  "d":d, "n":n, "k":k,
-                                  "name":args.infile}
-                                 )
-        print(trial_manager.df)
-
-    trial_manager.save(f"./{args.infile}-cuml")
 
 
 
@@ -456,7 +286,7 @@ def run_our_kmeans(args):
         cmd += f"-d {args.d} "
         suffix = f"-d{args.d}-k{args.k}"
     elif args.itervar=="k":
-        iter_var = np.arange(100, args.k+2, 100)
+        iter_var = np.arange(200, args.k+2, 200)
         cmd += f"-n {args.n} "
         cmd += f"-d {args.d} "
         suffix = f"-n{args.n}-d{args.d}"
@@ -501,7 +331,7 @@ def run_our_kmeans_infile(args):
     df = pd.read_csv(args.infile)
     n = df.shape[0]
     d = df.shape[1]
-    k_vec = np.arange(100, args.k, 100)
+    k_vec = np.arange(200, args.k, 200)
 
     cmd += f"-n {n} -d {d} "
 
@@ -819,22 +649,11 @@ if __name__=="__main__":
         plot_runtime(args)
     elif args.action=="plot-mem":
         plot_mem(args)
-    elif args.kernel!=None:
-        plot_kernel_runtime(args)
-    elif args.action=="cuml-kmeans":
-        run_cuml_kmeans(args)
-    elif args.action=="sklearn-kmeans":
-        run_sklearn_kmeans(args)
-    elif args.action=="torch-kmeans":
-        run_torch_kmeans(args)
     elif args.action=="our-kmeans":
         run_our_kmeans(args)
     elif args.action=="raft-kmeans":
         run_raft_kmeans(args)
     elif args.action=="our-kmeans-infile":
         run_our_kmeans_infile(args)
-    elif args.action=="cuml-kmeans-infile":
-        run_cuml_kmeans_infile(args)
-
 
 
