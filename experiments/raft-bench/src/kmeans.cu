@@ -283,6 +283,8 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k, const uint
     std::cout<<"Running kmeans"<<std::endl;
     std::cout<<"n:"<<n<<" d:"<<d<<" k:"<<k<<std::endl;
 
+    double score = 0;
+
     double kmeans_time = 0;
     for (int i=0; i<n_trials; i++) {
         cluster::detail::initRandom<data_t, ind_t>(handle, params, points_view, centroids.view());
@@ -299,11 +301,14 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k, const uint
                              check_converged);
         auto etime = std::chrono::system_clock::now();
         auto kmeans_duration = std::chrono::duration_cast<std::chrono::duration<double>>(etime - stime);
-        if (i>0)
+        if (i>0) {
             kmeans_time += kmeans_duration.count();
+        }
+        score += inertia;
     }
 
     kmeans_time /= (n_trials - 1);
+    score /= (n_trials);
 
 
 
@@ -395,9 +400,6 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k, const uint
     */
 
     std::cout<<std::fixed<<"kmeans-time: "<<kmeans_time<<"s"<<std::endl;
-    std::cout<<std::fixed<<"fused-dist-argmin-time: "<<fused_dist_time/n_iter_run<<"s"<<std::endl;
-    std::cout<<std::fixed<<"pwdist-time: "<<pw_dist_time/n_iter_run<<"s"<<std::endl;
-    std::cout<<std::fixed<<"argmin-time: "<<argmin_time/n_iter_run<<"s"<<std::endl;
     std::cout<<std::fixed<<"kmeans-score: "<<inertia<<std::endl;
     std::cout<<std::fixed<<"kmeans-iterations: "<<n_iter_run<<std::endl;
                                         

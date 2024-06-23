@@ -53,6 +53,7 @@ int main(int argc, char **argv) {
   printf(BOLDBLUE);
   double tot_time = 0;
   double init_time = 0;
+  double score = 0;
 
 
   for (uint32_t i = 0; i < runs; i++) {
@@ -79,12 +80,13 @@ int main(int argc, char **argv) {
       else
         printf("K-means did NOT converge - ");
       printf("Time: %lf\n", duration.count());
-      printf("Score: %lf\n", kmeans.get_score());
     #endif
+    score += kmeans.get_score();
   }
 
   printf("GPU_Kmeans: %lfs (%u runs)\n", tot_time / (runs-1), runs);
   printf("Init_time: %lfs \n", init_time / (runs-1));
+  printf("Score: %lf\n", score / runs);
   printf(RESET);
 
   if (strcmp(out_file.c_str(), "None")!=0) {

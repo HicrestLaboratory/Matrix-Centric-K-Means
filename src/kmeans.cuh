@@ -82,7 +82,7 @@ class Kmeans {
      * @return iter at which k-means converged
      * @return maxiter if did not converge
      */
-    uint64_t run(uint64_t maxiter);
+    uint64_t run(uint64_t maxiter, bool check_converged);
 
     inline float get_score() const {return score;}
 

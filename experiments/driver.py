@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 from matplotlib.font_manager import FontProperties
 import numpy as np
 import statistics as stats
+import scipy.stats as st
+
 
 
 from dataclasses import dataclass
@@ -35,6 +37,8 @@ class KmeansTrial(Trial):
                 "dist_runtime",
                 "argmin_runtime",
                 "centroids_runtime",
+                "bmult_runtime",
+                "iterations",
                 "memcpy_runtime",
                 "d", "k", "n", 
                 "mem",
@@ -54,21 +58,38 @@ class KmeansTrial(Trial):
             start_idx = 2 
 
         match = re.findall(pattern, output)
-        s = sum([float(t) for t in match[start_idx:]])
-        avg_time = s / (n_trials - 1)
-        return avg_time
+        lst = [float(t) for t in match[start_idx:]]
+        avg_time = stats.mean(lst)
+        stdev = stats.stdev(lst)
+        return avg_time,stdev
 
 
-    def parse_output(self, result, n_trials):
+    def get_iterations(self, output, n_trials, maxiters):
+
+        iters = 0
+
+        for line in output.splitlines():
+
+            if "converged at iteration" in line:
+                split_str = line.split("iteration")[1].split("-")[0]
+                curr_iters = int(split_str)
+                iters += curr_iters
+
+            elif "NOT" in line:
+                iters += maxiters
+
+        return iters // n_trials
+
+
+    def parse_output(self, result, n_trials, maxiters):
 
         output = result.stdout
         args = result.args
 
         print(output)
         
-        pattern = r"GPU_Kmeans: (\d+\.\d+)s"
-        match = re.search(pattern, output)
-        time = float(match.group(1))
+        pattern = r"Time: (\d+\.\d+)"
+        time = self.compute_time_avg(pattern, output, n_trials)
 
         pattern = r"MEMORY FOOTPRINT: (\d+) MB"
         match = re.search(pattern, output)
@@ -86,9 +107,14 @@ class KmeansTrial(Trial):
         pattern = r"compute_distances time: (\d+\.\d+)"
         dist_time = self.compute_time_avg(pattern, output, n_trials)
 
+        pattern = r"b-mult time: (\d+\.\d+)"
+        bmult_time = self.compute_time_avg(pattern, output, n_trials)
+
         pattern = r"Score: -?(\d+\.\d+)"
         match = re.search(pattern, output)
         score = float(match.group(1))
+
+        iters = self.get_iterations(output, n_trials, maxiters)
 
         pattern = r"-d (\d+)"
         match = re.search(pattern, args)
@@ -109,6 +135,8 @@ class KmeansTrial(Trial):
                 "memcpy_runtime":memcpy_time,
                 "d":d, "k":k, "n":n,
                 "mem":mem,
+                "iterations":iters,
+                "bmult_runtime":bmult_time,
                 "score":score,
                 }
 
@@ -137,6 +165,7 @@ class RaftTrial(Trial):
                 "fused_runtime",
                 "centroids_runtime",
                 "d", "k", "n", 
+                "iterations",
                 "name",
                 "score"]
 
@@ -144,7 +173,22 @@ class RaftTrial(Trial):
         super().__init__()
 
 
-    def parse_output(self, result, n_trials):
+    def compute_time_avg(self, pattern, output, n_trials):
+        
+        # Avoid warm-up
+        if "memcpy" in pattern:
+            start_idx = 1
+        else:
+            start_idx = 2 
+
+        match = re.findall(pattern, output)
+        lst = [float(t) for t in match[start_idx:]]
+        avg_time = stats.mean(lst)
+        stdev = stats.stdev(lst)
+        return avg_time,stdev
+
+
+    def parse_output(self, result, n_trials, maxiters):
 
         output = result.stdout
 
@@ -157,37 +201,29 @@ class RaftTrial(Trial):
         get_time_str = lambda s: re.escape(s) + r": (\d+\.\d+)s"
 
         pattern = get_time_str("centroids-update-time")
-        match = re.search(pattern, output)
-        centroids_time = float(match.group(1))
+        centroids_time = self.compute_time_avg(pattern, output, n_trials)
+
+        pattern = get_time_str("dist-argmin-time")
+        fused_time = self.compute_time_avg(pattern, output, n_trials)
 
         pattern = get_time_str("kmeans-time")
         match = re.search(pattern, output)
         kmeans_time = float(match.group(1))
 
-        pattern = get_time_str("dist-argmin-time")
-        match = re.search(pattern, output)
-        fused_time = float(match.group(1))
-
-        pattern = get_time_str("pwdist-time")
-        match = re.search(pattern, output)
-        pwdist_time = float(match.group(1))
-
-        # Have to use findall otherwise we match with fused-dist-argmin-time :/
-        pattern = get_time_str("argmin-time")
-        match = re.findall(pattern, output)
-        argmin_time = float(match[1])
-
         pattern = r"kmeans-score: (\d+\.\d+)"
         match = re.search(pattern, output)
         score = float(match.group(1))
 
+        pattern = r"kmeans-iterations: (\d+)"
+        match = re.search(pattern, output)
+        iters = int(match.group(1))
+
         return {"runtime":kmeans_time,
-                "dist_runtime":pwdist_time,
-                "argmin_runtime":argmin_time,
                 "centroids_runtime":centroids_time,
                 "fused_runtime":fused_time,
                 "d":d, "k":k, "n":n,
                 "score":score,
+                "iterations":iters
                 }
 
 def run_raft_kmeans(args):
@@ -201,7 +237,7 @@ def run_raft_kmeans(args):
         iter_var = np.arange(args.k, args.n+1, 1000)
         suffix = f"-d{args.d}-k{args.k}"
     elif args.itervar=="k":
-        iter_var = np.arange(500, args.k+2, 500)
+        iter_var = np.arange(100, args.k+2, 100)
         suffix = f"-n{args.n}-d{args.d}"
 
     for var in iter_var:
@@ -228,11 +264,13 @@ def run_raft_kmeans(args):
         else:
             cmd = ""
 
-        cmd += f"./raft-bench/build/kmeans {n} {d} {k} {args.maxiters}"
+        check = int(args.check)
+
+        cmd += f"./raft-bench/build/kmeans {n} {d} {k} {args.maxiters} {check}"
         print(f"Executing {cmd}")
 
         try:
-            trial_manager.run_trial(cmd, args.ntrials) #TODO: need to actually average this
+            trial_manager.run_trial(cmd, args.ntrials, args.maxiters) 
             print(trial_manager.df)
         except Exception as err:
             print(err)
@@ -418,7 +456,7 @@ def run_our_kmeans(args):
         cmd += f"-d {args.d} "
         suffix = f"-d{args.d}-k{args.k}"
     elif args.itervar=="k":
-        iter_var = np.arange(500, args.k+2, 500)
+        iter_var = np.arange(100, args.k+2, 100)
         cmd += f"-n {args.n} "
         cmd += f"-d {args.d} "
         suffix = f"-n{args.n}-d{args.d}"
@@ -449,7 +487,7 @@ def run_our_kmeans(args):
 
         print(f"Executing {cmd_curr}..")
 
-        trial_manager.run_trial(cmd_curr, args.ntrials)
+        trial_manager.run_trial(cmd_curr, args.ntrials, args.maxiters)
         print(trial_manager.df)
 
 
@@ -771,6 +809,7 @@ if __name__=="__main__":
     parser.add_argument("--ntrials", type=int, default=10)
     parser.add_argument("--maxiters", type=int, default=10)
     parser.add_argument("--infile", type=str)
+    parser.add_argument("--check", action='store_true' )
     
     args = parser.parse_args()
 

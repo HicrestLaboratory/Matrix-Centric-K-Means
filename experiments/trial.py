@@ -17,10 +17,10 @@ class Trial:
     def __init__(self):
         self.df = pd.DataFrame(columns=self.features)
     
-    def run_trial(self, cmd, n_iters):
+    def run_trial(self, cmd, n_iters, maxiters):
 
         result = self.run_command(cmd)
-        input_dict = self.parse_output(result, n_iters)
+        input_dict = self.parse_output(result, n_iters, maxiters)
         self.add_sample(input_dict)
 
     
