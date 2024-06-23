@@ -22,8 +22,9 @@
 #define ARG_TOL         "tolerance"
 #define ARG_RUNS        "runs"
 #define ARG_SEED        "seed"
+#define ARG_CHECK       "check"
 
-const char* ARG_STR[]   = {"dimensions", "n-samples", "clusters", "maxiter", "out-file", "in-file", "tolerance"};
+const char* ARG_STR[]   = {"dimensions", "n-samples", "clusters", "maxiter", "out-file", "in-file", "tolerance", "check"};
 const float DEF_EPSILON = numeric_limits<float>::epsilon();
 const int   DEF_RUNS    = 1;
 
@@ -85,8 +86,10 @@ string getArg_s (const cxxopts::ParseResult &args, const char *arg, const string
   }
 }
 
-void parse_input_args(const int argc, const char *const *argv, uint32_t *d, size_t *n, uint32_t *k, size_t *maxiter, string &out_file, float *tol, uint32_t *runs, int **seed, InputParser<DATA_TYPE> **input) {
+void parse_input_args(const int argc, const char *const *argv, uint32_t *d, size_t *n, uint32_t *k, size_t *maxiter, string &out_file, float *tol, uint32_t *runs, int **seed, InputParser<DATA_TYPE> **input, bool * check_converged) {
   cxxopts::Options options("gpukmeans", "gpukmeans is an implementation of the K-means algorithm that uses a GPU");
+
+  int _false = 0;
 
   options.add_options()
     ("h,help", "Print usage")
@@ -98,7 +101,8 @@ void parse_input_args(const int argc, const char *const *argv, uint32_t *d, size
     ("i," ARG_INFILE,   "Input filename",                   cxxopts::value<string>())
     ("r," ARG_RUNS,     "Number of k-means runs",           cxxopts::value<int>()->default_value(to_string(DEF_RUNS)))
     ("s," ARG_SEED,     "Seed for centroids generator",     cxxopts::value<int>())
-    ("t," ARG_TOL,      "Tolerance to declare convergence", cxxopts::value<float>()->default_value(to_string(DEF_EPSILON)));
+    ("t," ARG_TOL,      "Tolerance to declare convergence", cxxopts::value<float>()->default_value(to_string(DEF_EPSILON)))
+    ("c," ARG_CHECK, "Whether or not to check convergence", cxxopts::value<int>()->default_value(to_string(_false)));
 
   cxxopts::ParseResult args = options.parse(argc, argv);
 
@@ -116,6 +120,7 @@ void parse_input_args(const int argc, const char *const *argv, uint32_t *d, size
   out_file  = getArg_s(args, ARG_OUTFILE,  &def_outfile);
   *tol      = getArg_f(args, ARG_TOL,      &DEF_EPSILON);
   *runs     = getArg_u(args, ARG_RUNS,     &DEF_RUNS);
+  *check_converged = getArg_u(args, ARG_CHECK, &(_false));
 
   *seed = NULL;
   if (args[ARG_SEED].count() > 0) {

@@ -12,7 +12,6 @@
 #include <cstdint>
 #include <optional>
 
-int n_iters = 10;
 int n_trials = 10;
 
 namespace raft {
@@ -26,7 +25,8 @@ void my_kmeans_fit_main(raft::resources const& handle,
                                          raft::device_matrix_view<DataT, IndexT> centroidsRawData,
                                          raft::host_scalar_view<DataT> inertia,
                                          raft::host_scalar_view<IndexT> n_iter,
-                                         rmm::device_uvector<char>& workspace)
+                                         rmm::device_uvector<char>& workspace,
+                                         bool check_converged=false)
 {
     common::nvtx::range<common::nvtx::domain::raft> fun_scope("kmeans_fit_main");
     logger::get(RAFT_NAME).set_level(params.verbosity);
@@ -86,7 +86,7 @@ void my_kmeans_fit_main(raft::resources const& handle,
             "KMeans.fit: Iteration-%d: fitting the model using the initialized "
             "cluster centers",
             n_iter[0]);
-        std::cout<<"iter "<<n_iter[0]<<std::endl;
+        //std::cout<<"iter "<<n_iter[0]<<std::endl;
 
         auto centroids = raft::make_device_matrix_view<DataT, IndexT>(
             centroidsRawData.data_handle(), n_clusters, n_features);
@@ -107,7 +107,6 @@ void my_kmeans_fit_main(raft::resources const& handle,
                                                             params.batch_samples,
                                                             params.batch_centroids,
                                                             workspace);
-        resource::sync_stream(handle, stream);
         auto etime_dist = std::chrono::system_clock::now();
         auto dist_duration = std::chrono::duration_cast<std::chrono::duration<double>>(etime_dist-stime_dist);
         dist_time += dist_duration.count();
@@ -131,7 +130,6 @@ void my_kmeans_fit_main(raft::resources const& handle,
                                  wtInCluster.view(),
                                  newCentroids.view(),
                                  workspace);
-        resource::sync_stream(handle, stream);
         auto etime_update = std::chrono::system_clock::now();
         auto update_duration = std::chrono::duration_cast<std::chrono::duration<double>>(etime_update-stime_update);
         update_time += update_duration.count();
@@ -177,7 +175,7 @@ void my_kmeans_fit_main(raft::resources const& handle,
         }
 
         resource::sync_stream(handle, stream);
-        //if (sqrdNormError < params.tol) done = true;
+        if ((check_converged) && sqrdNormError < params.tol) done = true;
 
         if (done) {
             RAFT_LOG_DEBUG("Threshold triggered after %d iterations. Terminating early.", n_iter[0]);
@@ -187,7 +185,8 @@ void my_kmeans_fit_main(raft::resources const& handle,
 
     n_iter[0]--;
 
-    std::cout<<std::fixed<<"centroids-update-time: "<<update_time/n_iter[0]<<"s"<<std::endl;
+    std::cout<<std::fixed<<"centroids-update-time: "<<update_time<<"s"<<std::endl;
+    std::cout<<std::fixed<<"dist-argmin-time: "<<dist_time<<"s"<<std::endl;
     std::cout<<"n_iter[0] "<<n_iter[0]<<std::endl;
 
     auto centroids = raft::make_device_matrix_view<DataT, IndexT>(
@@ -242,7 +241,7 @@ void my_kmeans_fit_main(raft::resources const& handle,
 
 
 
-void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k)
+void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k, const uint32_t n_iters, const bool check_converged)
 {
     
     typedef float data_t; 
@@ -255,9 +254,13 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k)
     params.n_clusters = k;
     params.max_iter = n_iters;
     params.init = cluster::KMeansParams::InitMethod::Random;
+    params.inertia_check = true;
+    std::mt19937 gen(params.rng_state.seed);
+    params.rng_state.seed = gen();
 
     auto centroids = raft::make_device_matrix<data_t, ind_t>(handle, k, d);
     auto points = raft::make_device_matrix<data_t, ind_t>(handle, n, d);
+
 
     raft::random::RngState rand(1234ULL);
     raft::random::uniform(handle, rand,
@@ -282,6 +285,7 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k)
 
     double kmeans_time = 0;
     for (int i=0; i<n_trials; i++) {
+        cluster::detail::initRandom<data_t, ind_t>(handle, params, points_view, centroids.view());
         auto stime = std::chrono::system_clock::now();
         cluster::detail::my_kmeans_fit_main<data_t, ind_t>
                             (handle,
@@ -291,7 +295,8 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k)
                              centroids.view(),
                              raft::make_host_scalar_view(&inertia),
                              raft::make_host_scalar_view(&n_iter_run),
-                             workspace);
+                             workspace,
+                             check_converged);
         auto etime = std::chrono::system_clock::now();
         auto kmeans_duration = std::chrono::duration_cast<std::chrono::duration<double>>(etime - stime);
         if (i>0)
@@ -336,8 +341,7 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k)
             fused_dist_time += fused_duration.count();
         }
 
-    }
-    */
+    }*/
 
     // Run distances and argmin separately
     double pw_dist_time = 0;
@@ -352,6 +356,7 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k)
         raft::KeyValuePair<ind_t, data_t> init(0, std::numeric_limits<data_t>::max());
 
         for (int i=0; i<n_iter_run; i++) {
+            std::cout<<"Iteration "<<i<<std::endl;
             auto stime = std::chrono::system_clock::now();
             cluster::detail::pairwise_distance_kmeans<data_t, ind_t>
                     (
@@ -386,8 +391,8 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k)
             argmin_time += amin_duration.count();
         }
     }
-    */
 
+    */
 
     std::cout<<std::fixed<<"kmeans-time: "<<kmeans_time<<"s"<<std::endl;
     std::cout<<std::fixed<<"fused-dist-argmin-time: "<<fused_dist_time/n_iter_run<<"s"<<std::endl;
@@ -405,6 +410,9 @@ int main(int argc, char ** argv)
     int n = std::atoi(argv[1]);
     int d = std::atoi(argv[2]);
     int k = std::atoi(argv[3]);
-    run_kmeans(n, d, k);
+    int n_iters = std::atoi(argv[4]);
+    bool check_converged = (bool)std::atoi(argv[5]);
+    std::cout<<check_converged<<std::endl;
+    run_kmeans(n, d, k, n_iters, check_converged);
     return 0;
 }

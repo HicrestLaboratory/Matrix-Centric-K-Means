@@ -145,6 +145,44 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
     cudaEventDestroy(e_perf_bmult_stop);
 #endif
 
+#if PERFORMANCES_CENTROIDS_INIT 
+
+    cudaEvent_t e_centroid_init_start, e_centroid_init_stop;
+
+    cudaEventCreate(&e_centroid_init_start);
+    cudaEventCreate(&e_centroid_init_stop);
+    cudaEventRecord(e_centroid_init_start);
+
+#endif
+
+	CHECK_CUDA_ERROR(cudaMalloc(&d_centroids, CENTROIDS_BYTES));
+
+    switch(initMethod)
+    {
+        case InitMethod::random:
+            init_centroids_rand(points);
+            CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, h_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
+            break;
+        case InitMethod::kmeans_plus_plus:
+            init_centroids_plusplus(d_points);
+            CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
+            break;
+    }
+
+#if PERFORMANCES_CENTROIDS_INIT
+
+    cudaEventRecord(e_centroid_init_stop);
+    cudaEventSynchronize(e_centroid_init_stop);
+
+    float e_centroid_init_ms = 0;
+    cudaEventElapsedTime(&e_centroid_init_ms, e_centroid_init_start, e_centroid_init_stop);
+    printf(CYAN "[PERFORMANCE]" RESET " init_centroids time: %.8f\n", e_centroid_init_ms / 1000);
+
+    cudaEventDestroy(e_centroid_init_start);
+    cudaEventDestroy(e_centroid_init_stop);
+
+#endif
+
 }
 
 Kmeans::~Kmeans () {
@@ -318,48 +356,9 @@ void Kmeans::init_centroids_plusplus(DATA_TYPE * d_points)
 
 }
 
-uint64_t Kmeans::run (uint64_t maxiter) {
+uint64_t Kmeans::run (uint64_t maxiter, bool check_converged) {
     uint64_t converged = maxiter;
 
-
-
-#if PERFORMANCES_CENTROIDS_INIT 
-
-    cudaEvent_t e_centroid_init_start, e_centroid_init_stop;
-
-    cudaEventCreate(&e_centroid_init_start);
-    cudaEventCreate(&e_centroid_init_stop);
-    cudaEventRecord(e_centroid_init_start);
-
-#endif
-
-	CHECK_CUDA_ERROR(cudaMalloc(&d_centroids, CENTROIDS_BYTES));
-
-    switch(initMethod)
-    {
-        case InitMethod::random:
-            init_centroids_rand(points);
-            CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, h_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
-            break;
-        case InitMethod::kmeans_plus_plus:
-            init_centroids_plusplus(d_points);
-            CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
-            break;
-    }
-
-#if PERFORMANCES_CENTROIDS_INIT
-
-    cudaEventRecord(e_centroid_init_stop);
-    cudaEventSynchronize(e_centroid_init_stop);
-
-    float e_centroid_init_ms = 0;
-    cudaEventElapsedTime(&e_centroid_init_ms, e_centroid_init_start, e_centroid_init_stop);
-    printf(CYAN "[PERFORMANCE]" RESET " init_centroids time: %.8f\n", e_centroid_init_ms / 1000);
-
-    cudaEventDestroy(e_centroid_init_start);
-    cudaEventDestroy(e_centroid_init_stop);
-
-#endif
     const raft::resources raft_handle;
 
     const cudaStream_t stream = raft::resource::get_cuda_stream(raft_handle);
@@ -409,8 +408,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     CHECK_CUDA_ERROR(cudaMalloc(&d_centroids_row_norms, sizeof(DATA_TYPE) * k));
 
     raft::linalg::rowNorm(d_points_row_norms, d_points, d, (uint32_t)n, raft::linalg::L2Norm, true, stream);
-
-
 
 
     /* Malloc V for later */
@@ -465,7 +462,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                               d_new_centroids,
                                               CUDA_R_32F,
                                               CUSPARSE_ORDER_ROW));
-
 
 
     /* MAIN LOOP */
@@ -934,18 +930,19 @@ uint64_t Kmeans::run (uint64_t maxiter) {
                                                 raft::add_op{});
         score = d_score.value(stream);
 
-        if (iter > 1 && (sqrd_norm_err < tol || k_pruned==0)) {
-            continue; //make sure we run for maxiters for testing purposes 
+        if (iter==maxiter) {
+            thrust::copy(clusters, clusters+n, d_clusters.begin());
+            thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
+            break;
+        }
+
+        if (check_converged && (iter > 1) && (sqrd_norm_err < tol)) {
             converged = iter;
             thrust::copy(clusters, clusters+n, d_clusters.begin());
             thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
             break;
         } 
 
-        if (iter==maxiter) {
-            thrust::copy(clusters, clusters+n, d_clusters.begin());
-            thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
-        }
 
 
 	}
@@ -967,7 +964,6 @@ uint64_t Kmeans::run (uint64_t maxiter) {
     CHECK_CUDA_ERROR(cudaMemGetInfo(&free_mem, &total_mem));
     size_t usage = (total_mem - free_mem)/1e6;
     cout<<"MEMORY FOOTPRINT: "<<usage<<" MB"<<endl;
-
 #endif
 
 	/* COPY BACK RESULTS*/

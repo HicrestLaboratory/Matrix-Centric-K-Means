@@ -23,8 +23,8 @@ metadata = {"mtx-kmeans-2":("purple", "x"),
             "shuffle-kmeans":("teal", "o", "/"), 
             "cuml-kmeans":("lime", "v", "."),
             "mtx-kmeans-bulk":("crimson", "s", "x"),
-            "mtx-kmeans-norm":("orange", "^", "o"),
-            "raft-kmeans":("black", "+")}
+            "mtx-kmeans-norm":("purple", "x", "o"),
+            "raft-kmeans":("teal", "+")}
 font = FontProperties()
 font.set_family("monospace")
 
@@ -86,7 +86,7 @@ class KmeansTrial(Trial):
         pattern = r"compute_distances time: (\d+\.\d+)"
         dist_time = self.compute_time_avg(pattern, output, n_trials)
 
-        pattern = r"Score: (\d+\.\d+)"
+        pattern = r"Score: -?(\d+\.\d+)"
         match = re.search(pattern, output)
         score = float(match.group(1))
 
@@ -164,7 +164,7 @@ class RaftTrial(Trial):
         match = re.search(pattern, output)
         kmeans_time = float(match.group(1))
 
-        pattern = get_time_str("fused-dist-argmin-time")
+        pattern = get_time_str("dist-argmin-time")
         match = re.search(pattern, output)
         fused_time = float(match.group(1))
 
@@ -228,7 +228,7 @@ def run_raft_kmeans(args):
         else:
             cmd = ""
 
-        cmd += f"./raft-bench/build/kmeans {n} {d} {k}"
+        cmd += f"./raft-bench/build/kmeans {n} {d} {k} {args.maxiters}"
         print(f"Executing {cmd}")
 
         try:
@@ -561,7 +561,7 @@ def plot_runtime(args):
     elif args.itervar=="d":
         title_suffix = f"(n={args.n} k={args.k})"
     
-    plt.title(f"Runtime of 10 Iterations of K-means {title_suffix}")
+    plt.title(f"Runtime of 100 Iterations of K-means {title_suffix}")
     plt.legend()
 
     plt.savefig(f"./{args.platform}/kmeans-{title_suffix}", bbox_inches='tight')

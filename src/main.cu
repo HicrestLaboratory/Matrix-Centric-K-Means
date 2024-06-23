@@ -19,8 +19,13 @@ int main(int argc, char **argv) {
   float    tol;
   int     *seed = NULL;
   InputParser<float> *input = NULL;
+  bool check_converged;
 
-  parse_input_args(argc, argv, &d, &n, &k, &maxiter, out_file, &tol, &runs, &seed, &input);
+  parse_input_args(argc, argv, 
+                    &d, &n, &k, 
+                    &maxiter, out_file, 
+                    &tol, &runs, &seed, &input,
+                    &check_converged);
 
   #if DEBUG_INPUT_DATA
     cout << "Points" << endl << *input << endl;
@@ -60,7 +65,7 @@ int main(int argc, char **argv) {
         init_time += (chrono::duration_cast<chrono::duration<double>>(init_end - init_start)).count();
 
     const auto start = chrono::high_resolution_clock::now();
-    uint64_t converged = kmeans.run(maxiter);
+    uint64_t converged = kmeans.run(maxiter, check_converged);
     const auto end = chrono::high_resolution_clock::now();
 
 
