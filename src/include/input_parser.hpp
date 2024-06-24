@@ -19,27 +19,31 @@ class InputParser {
     size_t n;
 
   public:
+    //NOTE: This has been modified to work with the libsvm data format
     InputParser (istream &in, int _d, size_t _n) {
       this->dataset = new Point<T>*[_n];
       this->n = _n;
       this->d = _d;
 
+      std::string str;
+
       T *point = new T[_d];
-      for (size_t i = 0; i <= _n; i++) {
-        char str[MAX_LINE] = { 0 };
-        in >> str;
 
-        if (i == (size_t)0) { continue; }
-        if (!str[0]) { break; }
-
-        int j = 0;
-        char *tok = strtok(str, SEPARATOR);
-        while (tok && j < _d) {
-          point[j++] = atof(tok);
-          tok = strtok(NULL, SEPARATOR);
+      int i = 0;
+      while (std::getline(in, str, '\n')) {
+        std::istringstream input_str(str);
+        std::string token;
+        while (std::getline(input_str, token, ' ')) {
+            std::istringstream token_stream(token);
+            std::string key, value;
+            if (std::getline(token_stream, key, ':') &&
+                std::getline(token_stream, value)) {
+                    point[std::atoi(key.c_str())-1] = std::atof(value.c_str());
+            }
         }
-
-        dataset[i - 1] = new Point<T>(point, _d);
+        dataset[i] = new Point<T>(point, _d);
+        i++;
+        memset(point, 0, sizeof(T)*d);
       }
 
       delete[] point;

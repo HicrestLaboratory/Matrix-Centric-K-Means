@@ -2,6 +2,7 @@
 #include <vector>
 #include <iomanip>
 #include <cmath>
+#include <ctime>
 #include <limits>
 #include <map>
 #include <cublas_v2.h>
@@ -67,14 +68,8 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
 
     CHECK_CUBLAS_ERROR(cublasCreate(&cublasHandle));
 
-	if (seed) {
-		seed_seq s{*seed};
-		generator = new mt19937(s);
-	}
-	else {
-		random_device rd;
-		generator = new mt19937(rd());
-	}
+    random_device rd;
+    generator = new mt19937(std::time(0));
 
 
 	CHECK_CUDA_ERROR(cudaHostAlloc(&h_points, POINTS_BYTES, cudaHostAllocDefault));
@@ -157,17 +152,16 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
 
 	CHECK_CUDA_ERROR(cudaMalloc(&d_centroids, CENTROIDS_BYTES));
 
-    switch(initMethod)
-    {
-        case InitMethod::random:
-            init_centroids_rand(points);
-            CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, h_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
-            break;
-        case InitMethod::kmeans_plus_plus:
-            init_centroids_plusplus(d_points);
-            CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
-            break;
-    }
+    h_centroids_matrix = NULL;
+    CHECK_CUDA_ERROR(cudaHostAlloc(&h_centroids, CENTROIDS_BYTES, cudaHostAllocDefault));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_new_centroids, CENTROIDS_BYTES));
+    raft::resources handle;
+    auto points_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_points, n, d);
+    auto centroids_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_centroids, k, d);
+    raft::cluster::detail::shuffleAndGather<DATA_TYPE, uint32_t>(handle, points_view, centroids_view, k, 11);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
+
 
 #if PERFORMANCES_CENTROIDS_INIT
 
@@ -489,7 +483,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged) {
                                           d_centroids, d_centroids_row_norms,
                                           d_distances);
         } else {
-
             /* Bellavita K-Means */
             compute_gemm_distances_bellavita(cusparseHandle, 
                                             d, n, k_pruned,
@@ -497,8 +490,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged) {
                                             d_centroids_row_norms,
                                             B_descr, V_descr,
                                             D_descr, d_distances);
-
-
         }
 
         auto pw_dist_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_distances, n, k_pruned);
@@ -807,9 +798,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged) {
 
         compute_centroids_spmm(cusparseHandle,
                                 d, n, k,
-                                d_V_vals, 
-                                d_V_rowinds,
-                                d_V_col_offsets,
                                 d_new_centroids,
 								V_descr,
 								P_descr,

@@ -172,9 +172,6 @@ void compute_centroids_gemm(cublasHandle_t& handle,
 
 void compute_centroids_spmm(cusparseHandle_t& handle,
                             const uint32_t d, const uint32_t n, const uint32_t k,
-                            const DATA_TYPE * d_V_vals,
-                            const int32_t * d_V_rowinds,
-                            const int32_t * d_V_col_offsets,
                             DATA_TYPE * d_centroids,
                             cusparseSpMatDescr_t& V_descr,
                             cusparseDnMatDescr_t& P_descr,
@@ -182,7 +179,7 @@ void compute_centroids_spmm(cusparseHandle_t& handle,
 {
 
 
-    CHECK_CUSPARSE_ERROR(cusparseCscSetPointers(V_descr, (void*)d_V_col_offsets, (void*)d_V_rowinds, (void*)d_V_vals));
+    //CHECK_CUSPARSE_ERROR(cusparseCscSetPointers(V_descr, (void*)d_V_col_offsets, (void*)d_V_rowinds, (void*)d_V_vals));
     
     const DATA_TYPE alpha = 1.0;
     const DATA_TYPE beta = 0.0;
@@ -221,8 +218,6 @@ void compute_centroids_spmm(cusparseHandle_t& handle,
 
     CHECK_CUDA_ERROR(cudaFree(d_buff));
 
-    //TODO: Since we're allowed to have the output matrix in row-major form, we should probably change the stuff in
-    // kmeans.cu to store d_centroids in row major form
 
 }
 

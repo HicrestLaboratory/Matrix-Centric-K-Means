@@ -6,6 +6,8 @@
 #include <raft/cluster/kmeans_types.hpp>
 #include <raft/core/resources.hpp>
 
+#include <ctime>
+
 
 
 
@@ -150,6 +152,7 @@ void my_kmeans_fit_main(raft::resources const& handle,
         raft::copy(
             centroidsRawData.data_handle(), newCentroids.data_handle(), newCentroids.size(), stream);
 
+
         bool done = false;
         if (params.inertia_check) {
             // calculate cluster cost phi_x(C)
@@ -169,7 +172,6 @@ void my_kmeans_fit_main(raft::resources const& handle,
             if (n_iter[0] > 1) {
                 DataT delta = curClusteringCost / priorClusteringCost;
                 //if (delta > 1 - params.tol) done = true;
-                //make sure we run for all iters
             }
             priorClusteringCost = curClusteringCost;
         }
@@ -236,36 +238,75 @@ void my_kmeans_fit_main(raft::resources const& handle,
 
 
 
-
-
-
-
-
-void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k, const uint32_t n_iters, const bool check_converged)
+template <typename T>
+void read_data(const uint32_t n, const uint32_t d,
+                std::ifstream& in, T * d_dataset)
 {
+    T * h_dataset = new T[d*n];
+
+    std::string str;
+
+    int i = 0;
+    while (std::getline(in, str, '\n')) {
+        std::istringstream input_str(str);
+        std::string token;
+        while (std::getline(input_str, token, ' ')) {
+            std::istringstream token_stream(token);
+            std::string key, value;
+            if (std::getline(token_stream, key, ':') &&
+                std::getline(token_stream, value)) {
+                    h_dataset[std::atoi(key.c_str())-1 + d*i] = std::atof(value.c_str());
+            }
+        }
+        i++;
+    }
+
+
+    cudaMemcpy(d_dataset, h_dataset, sizeof(T)*d*n, cudaMemcpyHostToDevice);
+
+}
+
+
+
+
+
+void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k, const uint32_t n_iters, const bool check_converged,
+                float tol,
+                std::string infile)
+{
+    using namespace raft;
     
     typedef float data_t; 
     typedef uint32_t ind_t;
 
-    using namespace raft;
+    std::ifstream istream;
+    istream.open(infile);
+
 
     const raft::resources handle;
     cluster::KMeansParams params;
     params.n_clusters = k;
     params.max_iter = n_iters;
     params.init = cluster::KMeansParams::InitMethod::Random;
+    params.tol = tol;
     params.inertia_check = true;
-    std::mt19937 gen(params.rng_state.seed);
-    params.rng_state.seed = gen();
+    params.rng_state.seed = 1;
 
     auto centroids = raft::make_device_matrix<data_t, ind_t>(handle, k, d);
     auto points = raft::make_device_matrix<data_t, ind_t>(handle, n, d);
 
 
-    raft::random::RngState rand(1234ULL);
-    raft::random::uniform(handle, rand,
-                    raft::make_device_vector_view(points.data_handle(), points.size()),
-                    (data_t)-1e5, (data_t)1e5);
+    if (infile.compare("-1")==0) { 
+        raft::random::RngState rand(1234ULL);
+        raft::random::uniform(handle, rand,
+                        raft::make_device_vector_view(points.data_handle(), points.size()),
+                        (data_t)-1e5, (data_t)1e5);
+    } else {
+        read_data(n, d, istream, points.data_handle());
+    }
+
+    istream.close();
+
 
     auto points_view = raft::make_device_matrix_view<const data_t>(points.data_handle(),
                                                                     n, d);
@@ -287,7 +328,8 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k, const uint
 
     double kmeans_time = 0;
     for (int i=0; i<n_trials; i++) {
-        cluster::detail::initRandom<data_t, ind_t>(handle, params, points_view, centroids.view());
+        //cluster::detail::initRandom<data_t, ind_t>(handle, params, points_view, centroids.view());
+        raft::cluster::detail::shuffleAndGather<data_t, ind_t>(handle, points_view, centroids.view(), k, 11);
         auto stime = std::chrono::system_clock::now();
         cluster::detail::my_kmeans_fit_main<data_t, ind_t>
                             (handle,
@@ -305,6 +347,7 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k, const uint
             kmeans_time += kmeans_duration.count();
         }
         score += inertia;
+        std::cout<<inertia<<std::endl;
     }
 
     kmeans_time /= (n_trials - 1);
@@ -414,7 +457,11 @@ int main(int argc, char ** argv)
     int k = std::atoi(argv[3]);
     int n_iters = std::atoi(argv[4]);
     bool check_converged = (bool)std::atoi(argv[5]);
-    std::cout<<check_converged<<std::endl;
-    run_kmeans(n, d, k, n_iters, check_converged);
+    std::string infile;
+    if (argc > 6)
+        infile = std::string(argv[6]);
+    else
+        infile = std::string("-1");
+    run_kmeans(n, d, k, n_iters, check_converged, 1e-8, infile);
     return 0;
 }
