@@ -106,6 +106,20 @@ class Kmeans {
 
     DATA_TYPE* d_B;
 
+    DATA_TYPE * d_V_vals;
+    int32_t * d_V_rowinds;
+    int32_t * d_V_col_offsets;
+
+    DATA_TYPE * d_F_vals;
+    int32_t * d_F_rowinds;
+    int32_t * d_F_col_offsets;
+
+    cusparseDnMatDescr_t P_descr;
+    cusparseDnMatDescr_t B_descr;
+    cusparseDnMatDescr_t D_descr;
+    cusparseDnMatDescr_t C_descr;
+    cusparseSpMatDescr_t V_descr;
+    cusparseSpMatDescr_t F_descr;
 
 
     DATA_TYPE score;
@@ -113,6 +127,7 @@ class Kmeans {
     cudaDeviceProp* deviceProps;
 
     cublasHandle_t cublasHandle;
+    cusparseHandle_t cusparseHandle;
 
     /**
      * @brief Select k random centroids sampled form points

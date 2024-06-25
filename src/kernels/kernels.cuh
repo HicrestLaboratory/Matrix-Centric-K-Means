@@ -142,7 +142,7 @@ void compute_centroids_gemm(cublasHandle_t& handle,
                             const DATA_TYPE * d_V, const DATA_TYPE * d_points,
                             DATA_TYPE * d_centroids);
 
-//GLOBAL TODO: Handle case where we can't allocate enough blocks to make this work
+// CSC
 template <typename ClusterIter>
 __global__ void compute_v_sparse(DATA_TYPE * d_vals,
                                  int32_t * d_rowinds,

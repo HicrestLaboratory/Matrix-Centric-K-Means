@@ -179,8 +179,6 @@ void compute_centroids_spmm(cusparseHandle_t& handle,
 {
 
 
-    //CHECK_CUSPARSE_ERROR(cusparseCscSetPointers(V_descr, (void*)d_V_col_offsets, (void*)d_V_rowinds, (void*)d_V_vals));
-    
     const DATA_TYPE alpha = 1.0;
     const DATA_TYPE beta = 0.0;
     
