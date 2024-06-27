@@ -80,6 +80,7 @@ int main(int argc, char **argv) {
       else
         printf("K-means did NOT converge - ");
       printf("Time: %lf\n", duration.count());
+      printf("Objective score: %lf\n", kmeans.get_score());
     #endif
     score += kmeans.get_score();
   }

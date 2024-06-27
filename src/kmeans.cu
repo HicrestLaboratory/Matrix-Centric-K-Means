@@ -70,9 +70,6 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
     CHECK_CUBLAS_ERROR(cublasCreate(&cublasHandle));
     CHECK_CUSPARSE_ERROR(cusparseCreate(&cusparseHandle));
 
-    random_device rd;
-    generator = new mt19937(std::time(0));
-
 
 	CHECK_CUDA_ERROR(cudaHostAlloc(&h_points, POINTS_BYTES, cudaHostAllocDefault));
 	for (size_t i = 0; i < n; ++i) {
@@ -80,6 +77,19 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
 			h_points[i * d + j] = _points[i]->get(j);
 		}
 	}
+
+    /*
+    std::ofstream points_out;
+    points_out.open("points-ours.out");
+    for (int i=0; i<n; i++) {
+      for (int j=0; j<d; j++) {
+          points_out<<h_points[j + i*d]<<",";
+      }
+      points_out<<std::endl;
+    }
+    points_out.close();
+    */
+
 
 
 #ifdef PERFORMANCES_MEMCPY
@@ -200,6 +210,7 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
 
     /* Generate k distinct random point indices for the initial centroid set */
     std::unordered_set<uint32_t> found;
+    std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> distr(0, n-1);
 
@@ -253,6 +264,7 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const flo
     CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_new_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToDevice));
 
     CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
+
 
 
 #if PERFORMANCES_CENTROIDS_INIT
@@ -520,8 +532,26 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged) {
 
 
     /* MAIN LOOP */
+#if LOG
+    std::ofstream centroids_out;
+    centroids_out.open("centroids-ours.out");
+#endif
     while (iter++ < maxiter) {
     /* COMPUTE DISTANCES */
+
+#if LOG
+        CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_new_centroids, 
+                                    d * k * sizeof(DATA_TYPE), 
+                                    cudaMemcpyDeviceToHost));
+        centroids_out<<"CENTROIDS"<<std::endl;
+
+        for (int i=0; i<k; i++) {
+            for (int j=0; j<d; j++) {
+                centroids_out<<h_centroids[d*i + j]<<",";
+            }
+            centroids_out<<std::endl;
+        }
+#endif
 
 #if PERFORMANCES_KERNEL_DISTANCES
 
@@ -568,6 +598,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged) {
         cudaEventDestroy(e_perf_dist_stop);
 
 #endif
+
 
 #if DEBUG_KERNEL_DISTANCES
 
@@ -812,7 +843,20 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged) {
                                             (uint32_t)n,
                                             k,
                                             stream);
+#if LOG
 
+
+        thrust::device_vector<uint32_t> d_clusters(n);
+        thrust::copy(clusters, clusters+n, d_clusters.begin());
+        uint32_t * h_clusters = new uint32_t[n];
+        cudaMemcpy(h_clusters, thrust::raw_pointer_cast(d_clusters.data()), sizeof(uint32_t)*n, cudaMemcpyDeviceToHost);
+        centroids_out<<"CLUSTERS"<<std::endl;
+        for (int i=0; i<n; i++) {
+            centroids_out<<h_clusters[i]<<",";
+        }
+        centroids_out<<std::endl;
+        delete[] h_clusters;
+#endif
 
 #if DEBUG_KERNEL_ARGMIN
 
@@ -992,9 +1036,14 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged) {
             break;
         } 
 
-
+#if LOG
+        centroids_out<<"END ITERATION "<<(iter-1)<<std::endl;
+#endif
 
 	}
+#if LOG
+    centroids_out.close();
+#endif
 	/* MAIN LOOP END */
     CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, 
                                 d_centroids, 
