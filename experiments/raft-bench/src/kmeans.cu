@@ -5,6 +5,8 @@
 #include <raft/cluster/kmeans.cuh>
 #include <raft/cluster/kmeans_types.hpp>
 #include <raft/core/resources.hpp>
+#include <thrust/device_vector.h>
+#include <thrust/device_ptr.h>
 
 #include <ctime>
 
@@ -13,6 +15,9 @@
 
 #include <cstdint>
 #include <optional>
+
+#define SEPARATOR ","
+#define MAX_LINE   8192
 
 int n_trials = 10;
 
@@ -81,14 +86,36 @@ void my_kmeans_fit_main(raft::resources const& handle,
 
     double update_time = 0.0;
     double dist_time = 0.0;
+    IndexT d = X.extent(1);
+    IndexT n = X.extent(0);
+    IndexT k = n_clusters;
 
     DataT priorClusteringCost = 0;
+#if LOG
+    std::ofstream centroids_out;
+    centroids_out.open("centroids-raft.out");
+#endif
     for (n_iter[0] = 1; n_iter[0] <= params.max_iter; ++n_iter[0]) {
         RAFT_LOG_DEBUG(
             "KMeans.fit: Iteration-%d: fitting the model using the initialized "
             "cluster centers",
             n_iter[0]);
         //std::cout<<"iter "<<n_iter[0]<<std::endl;
+#if LOG
+
+        DataT * h_centroids = new DataT[d*k];
+        raft::copy(h_centroids, centroidsRawData.data_handle(), k*d, stream);
+
+        for (int i=0; i<k; i++) {
+            for (int j=0; j<d; j++) {
+                centroids_out<<h_centroids[d*i + j]<<",";
+            }
+            centroids_out<<std::endl;
+        }
+
+
+        delete[] h_centroids;
+#endif
 
         auto centroids = raft::make_device_matrix_view<DataT, IndexT>(
             centroidsRawData.data_handle(), n_clusters, n_features);
@@ -121,6 +148,18 @@ void my_kmeans_fit_main(raft::resources const& handle,
                                                                 detail::KeyValueIndexOp<IndexT, DataT>,
                                                                 raft::KeyValuePair<IndexT, DataT>*>
             itr(minClusterAndDistance.data_handle(), conversion_op);
+#if LOG
+        thrust::device_vector<uint32_t> d_clusters(n);
+        thrust::copy(itr, itr+n, d_clusters.begin());
+        uint32_t * h_clusters = new uint32_t[n];
+        cudaMemcpy(h_clusters, thrust::raw_pointer_cast(d_clusters.data()), sizeof(uint32_t)*n, cudaMemcpyDeviceToHost);
+        centroids_out<<"CLUSTERS"<<std::endl;
+        for (int i=0; i<n; i++) {
+            centroids_out<<h_clusters[i]<<",";
+        }
+        centroids_out<<std::endl;
+        delete[] h_clusters;
+#endif
 
         auto stime_update = std::chrono::system_clock::now();
         update_centroids(handle,
@@ -183,7 +222,13 @@ void my_kmeans_fit_main(raft::resources const& handle,
             RAFT_LOG_DEBUG("Threshold triggered after %d iterations. Terminating early.", n_iter[0]);
             break;
         }
+#if LOG
+        centroids_out<<"END ITERATION "<<(n_iter[0]-1)<<std::endl;
+#endif
     }
+#if LOG
+    centroids_out.close();
+#endif
 
     n_iter[0]--;
 
@@ -239,7 +284,7 @@ void my_kmeans_fit_main(raft::resources const& handle,
 
 
 template <typename T>
-void read_data(const uint32_t n, const uint32_t d,
+void read_svm(const uint32_t n, const uint32_t d,
                 std::ifstream& in, T * d_dataset)
 {
     T * h_dataset = new T[d*n];
@@ -263,10 +308,80 @@ void read_data(const uint32_t n, const uint32_t d,
 
 
     cudaMemcpy(d_dataset, h_dataset, sizeof(T)*d*n, cudaMemcpyHostToDevice);
+	delete[] h_dataset;
 
 }
 
 
+template <typename T>
+void read_csv(const uint32_t n, const uint32_t d,
+				std::istream& in, T * d_dataset)
+{
+
+    T * h_dataset = new T[d*n];
+
+    std::string str;
+
+    int i = 0;
+    while (std::getline(in, str, '\n')) {
+
+        /* Skip header */
+        if (i==0) {
+            i++;
+            continue;
+        }
+
+        std::istringstream input_str(str);
+        std::string token;
+        int j = 0;
+        while (std::getline(input_str, token, ',')) {
+
+            /* Skip class label */
+            if (j==0) {
+                j++;
+                continue;
+            }
+
+            std::istringstream token_stream(token);
+            h_dataset[j-1 + d*(i-1)] = std::atof(token.c_str());
+            j++;
+        }
+        i++;
+    }
+    /*
+    for (size_t i = 0; i <= n; i++) {
+    char str[MAX_LINE] = { 0 };
+    in >> str;
+
+    if (i == (size_t)0) { continue; }
+    if (!str[0]) { break; }
+
+    int j = 0;
+    char *tok = strtok(str, SEPARATOR);
+    while (tok && j < d) {
+      h_dataset[j + (i-1)*d] = atof(tok);
+      tok = strtok(NULL, SEPARATOR);
+      j++;
+    }
+
+    }
+  */
+
+    /*
+    std::ofstream points_out;
+    points_out.open("points-raft.out");
+    for (int i=0; i<n; i++) {
+      for (int j=0; j<d; j++) {
+          points_out<<h_dataset[j + i*d]<<",";
+      }
+      points_out<<std::endl;
+    }
+    points_out.close();
+    */
+
+    cudaMemcpy(d_dataset, h_dataset, sizeof(T)*d*n, cudaMemcpyHostToDevice);
+    delete[] h_dataset;
+}
 
 
 
@@ -282,6 +397,9 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k, const uint
     std::ifstream istream;
     istream.open(infile);
 
+	std::random_device rd;
+	std::mt19937 gen(rd());
+
 
     const raft::resources handle;
     cluster::KMeansParams params;
@@ -290,7 +408,6 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k, const uint
     params.init = cluster::KMeansParams::InitMethod::Random;
     params.tol = tol;
     params.inertia_check = true;
-    params.rng_state.seed = 1;
 
     auto centroids = raft::make_device_matrix<data_t, ind_t>(handle, k, d);
     auto points = raft::make_device_matrix<data_t, ind_t>(handle, n, d);
@@ -301,8 +418,10 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k, const uint
         raft::random::uniform(handle, rand,
                         raft::make_device_vector_view(points.data_handle(), points.size()),
                         (data_t)-1e5, (data_t)1e5);
-    } else {
-        read_data(n, d, istream, points.data_handle());
+    } else if (infile.find("svm")!=std::string::npos) {
+        read_svm(n, d, istream, points.data_handle());
+    } else if (infile.find("csv")!=std::string::npos) {
+        read_csv(n, d, istream, points.data_handle());
     }
 
     istream.close();
@@ -328,8 +447,9 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k, const uint
 
     double kmeans_time = 0;
     for (int i=0; i<n_trials; i++) {
-        //cluster::detail::initRandom<data_t, ind_t>(handle, params, points_view, centroids.view());
-        raft::cluster::detail::shuffleAndGather<data_t, ind_t>(handle, points_view, centroids.view(), k, 11);
+        params.rng_state.seed = gen();
+        cluster::detail::initRandom<data_t, ind_t>(handle, params, points_view, centroids.view());
+
         auto stime = std::chrono::system_clock::now();
         cluster::detail::my_kmeans_fit_main<data_t, ind_t>
                             (handle,
@@ -443,7 +563,7 @@ void run_kmeans(const uint32_t n, const uint32_t d, const uint32_t k, const uint
     */
 
     std::cout<<std::fixed<<"kmeans-time: "<<kmeans_time<<"s"<<std::endl;
-    std::cout<<std::fixed<<"kmeans-score: "<<inertia<<std::endl;
+    std::cout<<std::fixed<<"kmeans-score: "<<score<<std::endl;
     std::cout<<std::fixed<<"kmeans-iterations: "<<n_iter_run<<std::endl;
                                         
 }
@@ -462,6 +582,6 @@ int main(int argc, char ** argv)
         infile = std::string(argv[6]);
     else
         infile = std::string("-1");
-    run_kmeans(n, d, k, n_iters, check_converged, 1e-8, infile);
+    run_kmeans(n, d, k, n_iters, check_converged,0.0001, infile);
     return 0;
 }
