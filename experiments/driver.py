@@ -27,8 +27,8 @@ metadata = {"mtx-kmeans-2":("purple", "x"),
             "mtx-kmeans-bulk":("crimson", "s", "x"),
             "mtx-kmeans-norm":("purple", "x", "o"),
             "raft-kmeans":("teal", "+")}
-font = FontProperties()
-font.set_family("monospace")
+
+default_k_vals = [10, 50, 100, 500, 1000, 2000]
 
 
 class KmeansTrial(Trial):
@@ -223,7 +223,7 @@ def run_raft_kmeans(args):
         iter_var = np.arange(args.k, args.n+1, 1000)
         suffix = f"-d{args.d}-k{args.k}"
     elif args.itervar=="k":
-        iter_var = np.arange(200, args.k+2, 200)
+        iter_var = args.kvals
         suffix = f"-n{args.n}-d{args.d}"
 
     for var in iter_var:
@@ -252,7 +252,9 @@ def run_raft_kmeans(args):
 
         check = int(args.check)
 
-        cmd += f"./raft-bench/build/kmeans {n} {d} {k} {args.maxiters} {check}"
+        cmd += f"./raft-bench/build/kmeans {n} {d} {k} {args.maxiters} {check} "
+        if args.infile:
+            cmd += f"{args.infile}"
         print(f"Executing {cmd}")
 
         try:
@@ -270,9 +272,9 @@ def run_raft_kmeans(args):
 
 def run_our_kmeans(args):
 
-    cmd = f"../build/src/bin/{args.bin}  -m {args.maxiters}  -s 1 --runs {args.ntrials}  -t 0.0001 " 
+    cmd = f"../build/src/bin/{args.bin}  -m {args.maxiters}  -s 1 --runs {args.ntrials}  -t 0.0001 -c {int(args.check)} " 
     if args.infile:
-        cmd += f"{args.infile} "
+        cmd += f"-i {args.infile} "
 
     iter_var = [] 
     if args.itervar=="d":
@@ -286,7 +288,7 @@ def run_our_kmeans(args):
         cmd += f"-d {args.d} "
         suffix = f"-d{args.d}-k{args.k}"
     elif args.itervar=="k":
-        iter_var = np.arange(200, args.k+2, 200)
+        iter_var = args.kvals
         cmd += f"-n {args.n} "
         cmd += f"-d {args.d} "
         suffix = f"-n{args.n}-d{args.d}"
@@ -322,37 +324,6 @@ def run_our_kmeans(args):
 
 
     trial_manager.save(f"./{args.fname}{suffix}")
-
-
-def run_our_kmeans_infile(args):
-
-    cmd = f"../build/src/bin/{args.bin}  -m {args.maxiters}  -s 1 --runs {args.ntrials}  -t 0.0001 -i {args.infile} " 
-
-    df = pd.read_csv(args.infile)
-    n = df.shape[0]
-    d = df.shape[1]
-    k_vec = np.arange(200, args.k, 200)
-
-    cmd += f"-n {n} -d {d} "
-
-    # Add srun if using SLURM
-    if args.slurm:
-        cmd = "srun -G 1 -n 1 " + cmd
-
-    trial_manager = KmeansTrial()
-    
-    for k in k_vec:
-
-        cmd_curr = cmd + f"-k {k} "
-
-        print(f"Executing {cmd_curr}..")
-
-        trial_manager.run_trial(cmd_curr, args.ntrials)
-        print(trial_manager.df)
-
-
-    trial_manager.save(f"./{args.infile}-{args.fname}")
-
 
 
 def get_version_name(fpath):
@@ -640,6 +611,7 @@ if __name__=="__main__":
     parser.add_argument("--maxiters", type=int, default=10)
     parser.add_argument("--infile", type=str)
     parser.add_argument("--check", action='store_true' )
+    parser.add_argument("--kvals", nargs='+', default=default_k_vals)
     
     args = parser.parse_args()
 
@@ -653,7 +625,5 @@ if __name__=="__main__":
         run_our_kmeans(args)
     elif args.action=="raft-kmeans":
         run_raft_kmeans(args)
-    elif args.action=="our-kmeans-infile":
-        run_our_kmeans_infile(args)
 
 
