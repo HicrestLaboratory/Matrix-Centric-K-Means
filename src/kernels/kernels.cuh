@@ -209,7 +209,7 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
                                     DATA_TYPE * d_distances);
 
 
-void compute_gemm_distances_bellavita(const cusparseHandle_t& handle,
+void compute_distances_spmm(const cusparseHandle_t& handle,
                                         const uint32_t d, 
                                         const uint32_t n,
                                         const uint32_t k,

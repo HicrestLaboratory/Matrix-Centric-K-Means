@@ -23,8 +23,9 @@
 #define ARG_RUNS        "runs"
 #define ARG_SEED        "seed"
 #define ARG_CHECK       "check"
+#define ARG_PWDIST      "pwdist"
 
-const char* ARG_STR[]   = {"dimensions", "n-samples", "clusters", "maxiter", "out-file", "in-file", "tolerance", "check"};
+const char* ARG_STR[]   = {"dimensions", "n-samples", "clusters", "maxiter", "out-file", "in-file", "tolerance", "check", "pwdist"};
 const float DEF_EPSILON = numeric_limits<float>::epsilon();
 const int   DEF_RUNS    = 1;
 
@@ -86,7 +87,7 @@ string getArg_s (const cxxopts::ParseResult &args, const char *arg, const string
   }
 }
 
-void parse_input_args(const int argc, const char *const *argv, uint32_t *d, size_t *n, uint32_t *k, size_t *maxiter, string &out_file, float *tol, uint32_t *runs, int **seed, InputParser<DATA_TYPE> **input, bool * check_converged) {
+void parse_input_args(const int argc, const char *const *argv, uint32_t *d, size_t *n, uint32_t *k, size_t *maxiter, string &out_file, float *tol, uint32_t *runs, int **seed, InputParser<DATA_TYPE> **input, bool * check_converged, string& dist_method) {
   cxxopts::Options options("gpukmeans", "gpukmeans is an implementation of the K-means algorithm that uses a GPU");
 
   int _false = 0;
@@ -102,7 +103,8 @@ void parse_input_args(const int argc, const char *const *argv, uint32_t *d, size
     ("r," ARG_RUNS,     "Number of k-means runs",           cxxopts::value<int>()->default_value(to_string(DEF_RUNS)))
     ("s," ARG_SEED,     "Seed for centroids generator",     cxxopts::value<int>())
     ("t," ARG_TOL,      "Tolerance to declare convergence", cxxopts::value<float>()->default_value(to_string(DEF_EPSILON)))
-    ("c," ARG_CHECK, "Whether or not to check convergence", cxxopts::value<int>()->default_value(to_string(_false)));
+    ("c," ARG_CHECK, "Whether or not to check convergence", cxxopts::value<int>()->default_value(to_string(_false)))
+    ("p," ARG_PWDIST, "Method to use for pairwise distances", cxxopts::value<string>());
 
   cxxopts::ParseResult args = options.parse(argc, argv);
 
@@ -121,6 +123,7 @@ void parse_input_args(const int argc, const char *const *argv, uint32_t *d, size
   *tol      = getArg_f(args, ARG_TOL,      &DEF_EPSILON);
   *runs     = getArg_u(args, ARG_RUNS,     &DEF_RUNS);
   *check_converged = getArg_u(args, ARG_CHECK, &(_false));
+  dist_method = getArg_s(args, ARG_PWDIST, NULL);
 
   *seed = NULL;
   if (args[ARG_SEED].count() > 0) {
@@ -131,11 +134,19 @@ void parse_input_args(const int argc, const char *const *argv, uint32_t *d, size
   }
 
   if(args[ARG_INFILE].count() > 0) {
+
     const string in_file = getArg_s(args, ARG_INFILE, NULL);
     filebuf fb;
+
+    InputParser<DATA_TYPE>::InputFormat format;
+    if (in_file.find(".csv")!=string::npos)
+        format = InputParser<DATA_TYPE>::InputFormat::CSV;
+    else if (in_file.find(".svm")!=string::npos)
+        format = InputParser<DATA_TYPE>::InputFormat::SVM;
+
     if (fb.open(in_file, ios::in)) {
       istream file(&fb);
-      *input = new InputParser<DATA_TYPE>(file, *d, *n);
+      *input = new InputParser<DATA_TYPE>(file, *d, *n, format);
       fb.close();
     } else {
       printErrDesc(EXIT_INVALID_INFILE);

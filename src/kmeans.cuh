@@ -49,6 +49,12 @@ class Kmeans {
         kmeans_plus_plus
     };
 
+    enum class DistanceMethod
+    {
+        gemm,
+        spmm
+    };
+
 	template <typename IndexT, typename DataT>
 	struct KeyValueIndexScaleOp {
      
@@ -72,7 +78,8 @@ class Kmeans {
 	};
 
     Kmeans(const size_t n, const uint32_t d, const uint32_t k, const float tol, const int *seed, Point<DATA_TYPE>** points, cudaDeviceProp* deviceProps,
-            InitMethod _initMethod=InitMethod::random);
+            InitMethod _initMethod=InitMethod::random,
+            DistanceMethod _distMethod=DistanceMethod::gemm);
     ~Kmeans();
 
     /**
@@ -128,6 +135,8 @@ class Kmeans {
 
     cublasHandle_t cublasHandle;
     cusparseHandle_t cusparseHandle;
+
+    DistanceMethod dist_method;
 
     /**
      * @brief Select k random centroids sampled form points

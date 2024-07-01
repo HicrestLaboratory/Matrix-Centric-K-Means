@@ -20,12 +20,14 @@ int main(int argc, char **argv) {
   int     *seed = NULL;
   InputParser<float> *input = NULL;
   bool check_converged;
+  string dist_method_str;
 
   parse_input_args(argc, argv, 
                     &d, &n, &k, 
                     &maxiter, out_file, 
                     &tol, &runs, &seed, &input,
-                    &check_converged);
+                    &check_converged,
+                    dist_method_str);
 
   #if DEBUG_INPUT_DATA
     cout << "Points" << endl << *input << endl;
@@ -55,11 +57,20 @@ int main(int argc, char **argv) {
   double init_time = 0;
   double score = 0;
 
+  Kmeans::DistanceMethod dist_method;
+  if (dist_method_str.compare("gemm")==0) {
+      dist_method = Kmeans::DistanceMethod::gemm;
+  } else if (dist_method_str.compare("spmm")==0) {
+      dist_method = Kmeans::DistanceMethod::spmm;
+  } else {
+      printf("Invalid distance method: %s\n", dist_method_str.c_str()); 
+  }
 
   for (uint32_t i = 0; i < runs; i++) {
     const auto init_start = chrono::high_resolution_clock::now();
     Kmeans kmeans(n, d, k, tol, seed, input->get_dataset(), &deviceProp,
-                    Kmeans::InitMethod::random);
+                    Kmeans::InitMethod::random,
+                    dist_method);
     const auto init_end = chrono::high_resolution_clock::now();
 
     if (i>0)

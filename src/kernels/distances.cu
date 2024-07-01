@@ -616,6 +616,7 @@ __global__ void add_norm_mtx_col(const uint32_t m, const uint32_t n,
     }
 }
 
+
 /* Use the formulation from benoit et al */
 void compute_gemm_distances_arizona(cublasHandle_t& handle,
                                     const uint32_t d, const uint32_t n, const uint32_t k,
@@ -650,7 +651,7 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
 }
 
 
-void compute_gemm_distances_bellavita(const cusparseHandle_t& handle,
+void compute_distances_spmm(const cusparseHandle_t& handle,
                                         const uint32_t d, 
                                         const uint32_t n,
                                         const uint32_t k,
