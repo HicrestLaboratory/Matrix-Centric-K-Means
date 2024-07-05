@@ -141,8 +141,8 @@ class Kmeans {
     /**
      * @brief Select k random centroids sampled form points
      */
-    void init_centroids_rand(Point<DATA_TYPE>** points);
-    void init_centroids_plusplus(DATA_TYPE * d_points);
+    void init_centroids_rand();
+    void init_centroids_plus_plus();
     bool cmp_centroids();
     bool cmp_centroids_col_maj();
 

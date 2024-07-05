@@ -652,15 +652,15 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
 
 
 void compute_distances_spmm(const cusparseHandle_t& handle,
-                                        const uint32_t d, 
-                                        const uint32_t n,
-                                        const uint32_t k,
-                                        const DATA_TYPE * d_points_row_norms,
-                                        const DATA_TYPE * d_centroids_row_norms,
-                                        const cusparseDnMatDescr_t& B,
-                                        const cusparseSpMatDescr_t& V,
-                                        cusparseDnMatDescr_t& D,
-                                        DATA_TYPE * d_distances)
+                            const uint32_t d, 
+                            const uint32_t n,
+                            const uint32_t k,
+                            const DATA_TYPE * d_points_row_norms,
+                            const DATA_TYPE * d_centroids_row_norms,
+                            const cusparseDnMatDescr_t& B,
+                            const cusparseSpMatDescr_t& V,
+                            cusparseDnMatDescr_t& D,
+                            DATA_TYPE * d_distances)
 {
 
     const DATA_TYPE alpha = 1.0;

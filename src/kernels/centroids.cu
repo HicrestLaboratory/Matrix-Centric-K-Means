@@ -1,4 +1,6 @@
 #include "kernels.cuh"
+#include <random>
+#include <unordered_set>
 #include "../cuda_utils.cuh"
 #include "cub/cub.cuh"
 
@@ -216,8 +218,8 @@ void compute_centroids_spmm(cusparseHandle_t& handle,
 
     CHECK_CUDA_ERROR(cudaFree(d_buff));
 
-
 }
+
 
 
 __global__ void find_stationary_clusters(const uint32_t n,

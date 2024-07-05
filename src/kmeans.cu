@@ -20,6 +20,8 @@
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/transform.h>
 #include <thrust/functional.h>
+#include <thrust/sequence.h>
+#include <thrust/gather.h>
 
 #include <raft/core/device_mdarray.hpp>
 #include <raft/cluster/kmeans.cuh>
@@ -157,7 +159,8 @@ const DistanceMethod _distMethod)
     cudaEventDestroy(e_perf_bmult_stop);
 #endif
 
-    /* Init matrix descriptors */
+
+    /* Init matrix buffers */
 
     CHECK_CUDA_ERROR(cudaMalloc(&d_V_vals, sizeof(DATA_TYPE)*n));
     CHECK_CUDA_ERROR(cudaMalloc(&d_V_rowinds, sizeof(int32_t)*n));
@@ -168,10 +171,12 @@ const DistanceMethod _distMethod)
     CHECK_CUDA_ERROR(cudaMalloc(&d_F_col_offsets, sizeof(int32_t)*(n+1)));
 
     h_centroids_matrix = NULL;
-
 	CHECK_CUDA_ERROR(cudaMalloc(&d_centroids, CENTROIDS_BYTES));
     CHECK_CUDA_ERROR(cudaHostAlloc(&h_centroids, CENTROIDS_BYTES, cudaHostAllocDefault));
     CHECK_CUDA_ERROR(cudaMalloc(&d_new_centroids, CENTROIDS_BYTES));
+
+
+    /* Init matrix descriptors */
 
     CHECK_CUSPARSE_ERROR(cusparseCreateCsc(&V_descr,
                                             k, n, n,
@@ -214,65 +219,18 @@ const DistanceMethod _distMethod)
 
 #endif
 
-
-    /* Generate k distinct random point indices for the initial centroid set */
-    std::unordered_set<uint32_t> found;
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> distr(0, n-1);
-
-    while (found.size() < k) {
-        int curr = distr(gen);
-        if (found.find(curr) == found.end()) {
-            found.insert(curr);
-        }
+    switch(initMethod)
+    {
+        case Kmeans::InitMethod::random:
+            init_centroids_rand();
+            break;
+        case Kmeans::InitMethod::kmeans_plus_plus:
+            init_centroids_plus_plus();
+            break;
+        default:
+            std::cerr<<"Invalid centroid initialization method"<<std::endl;
+            exit(1);
     }
-
-    std::vector<uint32_t> rowinds(k);
-    for (int i=0; i<k; i++)
-        rowinds[i] = i;
-
-    std::vector<DATA_TYPE> vals(k);
-    std::fill(vals.begin(), vals.end(), 1);
-
-    std::vector<uint32_t> colptrs(n+1);
-    uint32_t colidx = 0;
-    for (int i=0; i<n; i++) {
-        colptrs[i] = colidx;
-        if (found.find(i) != found.end()) {
-            colidx += 1;
-        }
-    }
-    colptrs[n] = k;
-
-    CHECK_CUDA_ERROR(cudaMemcpy(d_F_vals, vals.data(), sizeof(DATA_TYPE)*k, cudaMemcpyHostToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(d_F_rowinds, rowinds.data(), sizeof(uint32_t)*k, cudaMemcpyHostToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(d_F_col_offsets, colptrs.data(), sizeof(uint32_t)*(n+1), cudaMemcpyHostToDevice));
-    
-    CHECK_CUSPARSE_ERROR(cusparseCreateCsc(&F_descr,
-                                            k, n, k,
-                                            d_F_col_offsets,
-                                            d_F_rowinds,
-                                            d_F_vals,
-                                            CUSPARSE_INDEX_32I,
-                                            CUSPARSE_INDEX_32I,
-                                            CUSPARSE_INDEX_BASE_ZERO,
-                                            CUDA_R_32F));
-
-
-    compute_centroids_spmm(cusparseHandle, 
-                            d, n, k,
-                            d_new_centroids,
-                            F_descr,
-                            P_descr,
-                            C_descr);
-
-
-    CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_new_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToDevice));
-
-    CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
-
-
 
 #if PERFORMANCES_CENTROIDS_INIT
 
@@ -290,7 +248,8 @@ const DistanceMethod _distMethod)
 
 }
 
-Kmeans::~Kmeans () {
+Kmeans::~Kmeans () 
+{
 
 	delete generator;
 
@@ -333,160 +292,183 @@ Kmeans::~Kmeans () {
 	compute_gemm_distances_free();
 }
 
-void Kmeans::init_centroids_rand (Point<DATA_TYPE>** points) {
-	uniform_int_distribution<int> random_int(0, n - 1);
-
-    h_centroids_matrix = NULL;
-
-	CHECK_CUDA_ERROR(cudaHostAlloc(&h_centroids, CENTROIDS_BYTES, cudaHostAllocDefault));
-    CHECK_CUDA_ERROR(cudaMalloc(&d_new_centroids, CENTROIDS_BYTES));
 
 
-	unsigned int i = 0;
-    map<int, bool> usedPoints;
-	Point<DATA_TYPE>* centroids[k];
-	while (i < k) {
-        int point_idx = random_int(*generator);
-		Point<DATA_TYPE>* p = points[point_idx];
-		bool found = usedPoints.find(point_idx)!=usedPoints.end();
-		if (!found) {
-			centroids[i] = new Point<DATA_TYPE>(p);
-			usedPoints.emplace(point_idx, true);
-			++i;
-		}
-	}
 
-#if DEBUG_INIT_CENTROIDS
-    cout << endl << "Centroids" << endl;
-    for (i = 0; i < k; ++i)
-        cout << *(centroids[i]) << endl;
-#endif
+void Kmeans::init_centroids_rand () {
 
-	for (size_t i = 0; i < k; ++i) {
-		for (size_t j = 0; j < d; ++j) {
-			h_centroids[i * d + j] = centroids[i]->get(j); // Row major
-		}
-	}
+    std::uniform_int_distribution<> distr(0, n-1);
+
+    init_centroid_selector(k, n, d, distr, d_F_vals, d_F_rowinds, d_F_col_offsets, &F_descr);
+
+    compute_centroids_spmm(cusparseHandle, 
+                            d, n, k,
+                            d_new_centroids,
+                            F_descr,
+                            P_descr,
+                            C_descr);
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_new_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
 
 }
 
 
-void Kmeans::init_centroids_plusplus(DATA_TYPE * d_points)
+void Kmeans::init_centroids_plus_plus()
 {
-    h_centroids_matrix = NULL;
-
+    /* Number of currently chosen clusters */
     uint32_t n_clusters = 0;
+
+    /* Raft setup things */
+    const raft::resources raft_handle;
+    const cudaStream_t stream = raft::resource::get_cuda_stream(raft_handle);
+    rmm::device_uvector<DATA_TYPE> tmp_datatype(0, stream);
+    rmm::device_uvector<char> workspace(0, stream);
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    raft::random::RngState rng(rd());
     
-    /* Allocate host centroid buffers */
-	CHECK_CUDA_ERROR(cudaHostAlloc(&h_centroids, CENTROIDS_BYTES, cudaHostAllocDefault));
+    /* Number of centroids to sample each iteration */
+    const uint32_t s = 2 + static_cast<uint32_t>(std::ceil(std::log2(k)));
 
+    /* Store indices of chosen centroids to initialize F at the end */
+    std::unordered_set<uint32_t> found;
+    found.reserve(k);
 
-    /* Choose first centroid uniformly at random */
-    uniform_int_distribution<int> rand_uniform(0, n-1);
-    int first_centroid_idx = rand_uniform(*generator);
-    DATA_TYPE * d_first_centroid = d_points + (d * first_centroid_idx);
+    /* Randomly sample initial centroid */
+    std::uniform_int_distribution<> distr(0, n-1);
 
-    /* Copy it to centroids matrix */
-    CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_first_centroid, 
-                                sizeof(DATA_TYPE)*d, cudaMemcpyDeviceToDevice));
+    int first_centroid_idx = distr(gen);
+    DATA_TYPE * d_first_centroid;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_first_centroid, sizeof(DATA_TYPE)*d));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_first_centroid, d_points+(first_centroid_idx*d), sizeof(DATA_TYPE)*d, cudaMemcpyDeviceToDevice));
+
+    found.insert(first_centroid_idx);
     n_clusters++;
 
+    /* Compute distances from each point to the first centroid,
+     * technically this should probably use the Kmeans-HD distances method,
+     * but this is so much easier to program and it likely doesn't matter THAT
+     * much for performance since it's a single distances computation
+     * with a single centroid
+     */
+    auto first_centroid_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_first_centroid, 1, d);
+    auto points_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_points, n, d);
 
-    /* Malloc points matrix and centroid vector */
-    DATA_TYPE * d_P;
-    DATA_TYPE * d_c_vec;
-    CHECK_CUDA_ERROR(cudaMalloc(&(d_P), n * 3 * d * sizeof(DATA_TYPE)));
-    CHECK_CUDA_ERROR(cudaMalloc(&(d_c_vec), 3 * d * sizeof(DATA_TYPE)));
+    thrust::device_vector<DATA_TYPE> d_points_row_norms(n);
+    raft::linalg::rowNorm(thrust::raw_pointer_cast(d_points_row_norms.data()), 
+                            d_points, d, (uint32_t)n, raft::linalg::L2Norm, true, stream);
 
-    /* Malloc tmp_distances and distances, init distances */
-    DATA_TYPE * tmp_dist;
-    DATA_TYPE * dist;
-    CHECK_CUDA_ERROR(cudaMalloc(&tmp_dist, sizeof(DATA_TYPE)*n));
-    CHECK_CUDA_ERROR(cudaMalloc(&dist, sizeof(DATA_TYPE)*n));
+    auto points_row_norms_view = raft::make_device_vector_view<DATA_TYPE, uint32_t>(thrust::raw_pointer_cast(d_points_row_norms.data()), n);
 
+    auto min_distances = raft::make_device_vector<DATA_TYPE, uint32_t>(raft_handle, n);
 
-    /* Initialize points matrix */
-    uint32_t p_mat_block_dim(min((size_t)deviceProps->maxThreadsPerBlock, n));
-    uint32_t p_mat_grid_dim(3*d);
-    uint32_t p_rounds = ceil((float)n / (float)p_mat_block_dim);
-
-    compute_p_matrix<<<p_mat_grid_dim, p_mat_block_dim>>>(d_points, d_P, d, n, k, p_rounds);
+    raft::cluster::kmeans::min_cluster_distance<DATA_TYPE, uint32_t>(raft_handle,
+                                                points_view,
+                                                first_centroid_view,
+                                                min_distances.view(),
+                                                points_row_norms_view,
+                                                tmp_datatype,
+                                                raft::distance::DistanceType::L2Expanded,
+                                                n, 1,
+                                                workspace);
 
 
-    /* Initialize first c_vec using first chosen centroid */
-    uint32_t c_vec_block_dim = min((uint32_t)deviceProps->maxThreadsPerBlock, d);
-    uint32_t c_vec_grid_dim = ceil((float)d / (float)c_vec_block_dim) ;  
+    /* Setup descriptor and buffers for K */
+    cusparseSpMatDescr_t K_descr;
 
-    compute_c_vec<<<c_vec_grid_dim, c_vec_block_dim>>>(d_first_centroid, d_c_vec, d);
+    thrust::device_vector<DATA_TYPE> d_K_vals(s);
+    thrust::fill(d_K_vals.begin(), d_K_vals.end(), 1);
 
-    /* Call gemv to compute distances between all points and most recent centroid */
-    const DATA_TYPE alpha = 1.0;
-    const DATA_TYPE beta = 1.0;
-    CHECK_CUBLAS_ERROR(cublasSgemv(cublasHandle, CUBLAS_OP_N, 
-                                   n, 3*d,
-                                   &alpha,
-                                   d_P, n,
-                                   d_c_vec, 1,
-                                   &beta,
-                                   dist, 1));
+    thrust::device_vector<int32_t> centroid_indices(s);
+    auto centroid_indices_view = raft::make_device_vector_view<int32_t, uint32_t>(thrust::raw_pointer_cast(centroid_indices.data()),
+                                                                                  s);
 
-    /* Set up argmax */
-    //cub::KeyValuePair<int32_t, DATA_TYPE> * d_argmax = nullptr;
-    uint32_t argmax_idx;
-    //CHECK_CUDA_ERROR(cudaMalloc(&d_argmax, sizeof(uint32_t)*2));
+    thrust::device_vector<int32_t>  d_K_rowptrs(n+1);
+    thrust::sequence(d_K_rowptrs.begin(), d_K_rowptrs.end(), 0);
 
-    void * d_tmp_storage = nullptr;
-    size_t tmp_storage_bytes = 0;
-    //cub::DeviceReduce::ArgMax(d_tmp_storage, tmp_storage_bytes,
-     //                           dist, d_argmax, n);
-    CHECK_CUDA_ERROR(cudaMalloc(&d_tmp_storage, tmp_storage_bytes));
+    CHECK_CUSPARSE_ERROR(cusparseCreateCsr(&K_descr,
+                                            s, n, s,
+                                            thrust::raw_pointer_cast(d_K_rowptrs.data()),
+                                            thrust::raw_pointer_cast(centroid_indices.data()),
+                                            thrust::raw_pointer_cast(d_K_vals.data()),
+                                            CUSPARSE_INDEX_32I,
+                                            CUSPARSE_INDEX_32I,
+                                            CUSPARSE_INDEX_BASE_ZERO,
+                                            CUDA_R_32F));
 
-                                
+    /* Setup descriptor and buffers for D_pp */
+    cusparseDnMatDescr_t D_pp_descr;
+    DATA_TYPE * d_distances;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_distances, sizeof(DATA_TYPE)*s*n));
+    CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&D_pp_descr, 
+                                             s, n, s,
+                                             d_distances,
+                                             CUDA_R_32F,
+                                             CUSPARSE_ORDER_COL));
 
-    while (n_clusters < k) {
+    
+    /* Norms of centroids, which are just norms of points here */
+    thrust::device_vector<DATA_TYPE> d_centroids_row_norms(s);
 
-        /* Argmax to get next centroid */
-        //cub::DeviceReduce::ArgMax(d_tmp_storage, tmp_storage_bytes,
-         //                       dist, d_argmax, n);
-        //CHECK_CUDA_ERROR(cudaMemcpy(&argmax_idx, &(d_argmax->key), sizeof(uint32_t),
-         //                           cudaMemcpyDeviceToHost));
+    /* Main loop:
+     * sample s centroids according to min_distances
+     * init K using sampled centroid indices
+     * compute next round of distances using spmm
+     * choose centroid from candidates with lowest cluster cost
+     * repeat until k centroids chosen 
+     */
+    while (n_clusters < k)
+    {
 
-        DATA_TYPE * d_farthest_point = d_points + (d * argmax_idx);
-        DATA_TYPE * d_curr_centroid = d_centroids + (d * n_clusters);
+        /* Randomly sample s centroids.
+         * Store the indices of the sampled centroids in centroid_indices,
+         * which doubles as the colinds array of K.
+         */
+        raft::random::discrete<int32_t, DATA_TYPE, uint32_t>(raft_handle,
+                                                              rng, 
+                                                              centroid_indices_view,
+                                                              min_distances.view());
 
-        CHECK_CUDA_ERROR(cudaMemcpy(d_curr_centroid, 
-                                    d_farthest_point,
-                                    sizeof(DATA_TYPE)*d,
-                                    cudaMemcpyDeviceToDevice));
+        /* Compute centroid norms by sampling from the previously computed row norms */
+        thrust::gather(centroid_indices.begin(), centroid_indices.end(), 
+                        d_points_row_norms.begin(),
+                        d_centroids_row_norms.begin());
+        
 
-        /* Compute distances between points and previously chosen centroid */
-        compute_c_vec<<<c_vec_grid_dim, c_vec_block_dim>>>(d_curr_centroid, d_c_vec, d);
-        CHECK_CUBLAS_ERROR(cublasSgemv(cublasHandle, CUBLAS_OP_N, 
-                                       n, 3*d,
-                                       &alpha,
-                                       d_P, n,
-                                       d_c_vec, 1,
-                                       &beta,
-                                       tmp_dist, 1));
+        /* Compute distances from points to sampled centroids */
+        compute_distances_spmm(cusparseHandle,
+                                d, n, k,
+                                thrust::raw_pointer_cast(d_points_row_norms.data()),
+                                thrust::raw_pointer_cast(d_centroids_row_norms.data()),
+                                B_descr,
+                                K_descr,
+                                D_pp_descr,
+                                d_distances);
 
-        /* Update dist vector with new smallest distances */
-        const uint32_t ewise_block_dim = min(d, deviceProps->maxThreadsPerBlock);
-        const uint32_t ewise_grid_dim = ceil((float)d / (float)ewise_block_dim);
-        ewise_min<<<ewise_grid_dim, ewise_block_dim>>>(tmp_dist, dist, d);
+        /* From here on out, this is identical to what RAFT does */
+
+
+        /* Add index of chosen centroid to found set */
+
 
         n_clusters++;
+
+
     }
 
-    // Copy centroids to host
-    CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, sizeof(DATA_TYPE)*d*k,
-                                cudaMemcpyDeviceToHost));
+    /* One last spmm to actually compute the new centroids */
 
-    // Free  
-    CHECK_CUDA_ERROR(cudaFree(d_P));
-    CHECK_CUDA_ERROR(cudaFree(d_c_vec));
-    CHECK_CUDA_ERROR(cudaFree(tmp_dist));
-    CHECK_CUDA_ERROR(cudaFree(dist));
-    CHECK_CUDA_ERROR(cudaFree(d_tmp_storage));
+
+    /* Copy centroids to appropriate host and device buffers */
+    CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_new_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
+
+
+    /* Cleanup */
+    CHECK_CUDA_ERROR(cudaFree(d_distances));
+    CHECK_CUSPARSE_ERROR(cusparseDestroySpMat(K_descr));
+    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(D_pp_descr));
 
 }
 

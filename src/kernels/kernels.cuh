@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <cublas_v2.h>
 #include <cusparse.h>
+#include <random>
+#include <unordered_set>
 
 #include "../include/common.h"
 
@@ -171,6 +173,66 @@ void compute_centroids_spmm(cusparseHandle_t& handle,
 
 void check_p_correctness(DATA_TYPE * P, DATA_TYPE * points, uint32_t n, uint32_t d);
 void check_c_correctness(DATA_TYPE * C, DATA_TYPE * centroids, uint32_t k, uint32_t d);
+
+
+template <typename Distribution>
+void init_centroid_selector(const uint32_t s,
+                            const uint32_t n,
+                            const uint32_t d,
+                            Distribution& distr,
+                            DATA_TYPE * d_F_vals,
+                            int32_t * d_F_rowinds,
+                            int32_t * d_F_colptrs,
+                            cusparseSpMatDescr_t * F_descr)
+{
+    /* Generate k distinct random point indices for the initial centroid set */
+    std::unordered_set<uint32_t> found;
+    found.reserve(s);
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    while (found.size() < s) 
+    {
+        int curr = distr(gen);
+        if (found.find(curr) == found.end()) {
+            found.insert(curr);
+        }
+    }
+
+    std::vector<uint32_t> rowinds(s);
+    for (int i=0; i<s; i++)
+        rowinds[i] = i;
+
+    std::vector<DATA_TYPE> vals(s);
+    std::fill(vals.begin(), vals.end(), 1);
+
+    std::vector<uint32_t> colptrs(n+1);
+    uint32_t colidx = 0;
+    for (int i=0; i<n; i++) {
+        colptrs[i] = colidx;
+        if (found.find(i) != found.end()) {
+            colidx += 1;
+        }
+    }
+    colptrs[n] = s;
+
+    (cudaMemcpy(d_F_vals, vals.data(), sizeof(DATA_TYPE)*s, cudaMemcpyHostToDevice));
+    (cudaMemcpy(d_F_rowinds, rowinds.data(), sizeof(uint32_t)*s, cudaMemcpyHostToDevice));
+    (cudaMemcpy(d_F_colptrs, colptrs.data(), sizeof(uint32_t)*(n+1), cudaMemcpyHostToDevice));
+    
+    (cusparseCreateCsc(F_descr,
+                        s, n, s,
+                        d_F_colptrs,
+                        d_F_rowinds,
+                        d_F_vals,
+                        CUSPARSE_INDEX_32I,
+                        CUSPARSE_INDEX_32I,
+                        CUSPARSE_INDEX_BASE_ZERO,
+                        CUDA_R_32F));
+
+}
+
+
 
 __global__ void find_stationary_clusters(const uint32_t n,
                               const uint32_t k,
