@@ -46,7 +46,7 @@ class Kmeans {
     enum class InitMethod
     {
         random,
-        kmeans_plus_plus
+        plus_plus
     };
 
     enum class DistanceMethod
@@ -118,8 +118,8 @@ class Kmeans {
     int32_t * d_V_col_offsets;
 
     DATA_TYPE * d_F_vals;
-    int32_t * d_F_rowinds;
-    int32_t * d_F_col_offsets;
+    int32_t * d_F_colinds;
+    int32_t * d_F_row_offsets;
 
     cusparseDnMatDescr_t P_descr;
     cusparseDnMatDescr_t B_descr;

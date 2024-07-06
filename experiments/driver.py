@@ -40,6 +40,7 @@ class KmeansTrial(Trial):
                 "bmult_runtime",
                 "iterations",
                 "memcpy_runtime",
+                "centroid_init_runtime",
                 "d", "k", "n", 
                 "mem",
                 "name",
@@ -110,6 +111,9 @@ class KmeansTrial(Trial):
         pattern = r"b-mult time: (\d+\.\d+)"
         bmult_time = self.compute_time_avg(pattern, output, n_trials)
 
+        pattern = r"init_centroids time: (\d+\.\d+)"
+        centroid_init_time = self.compute_time_avg(pattern, output, n_trials)
+
         pattern = r"Score: -?(\d+\.\d+)"
         match = re.search(pattern, output)
         score = float(match.group(1))
@@ -133,6 +137,7 @@ class KmeansTrial(Trial):
                 "argmin_runtime":argmin_time,
                 "centroids_runtime":centroids_time,
                 "memcpy_runtime":memcpy_time,
+                "centroid_init_runtime": centroid_init_time,
                 "d":d, "k":k, "n":n,
                 "mem":mem,
                 "iterations":iters,
@@ -150,6 +155,7 @@ class RaftTrial(Trial):
                 "argmin_runtime",
                 "fused_runtime",
                 "centroids_runtime",
+                "centroid_init_runtime",
                 "d", "k", "n", 
                 "iterations",
                 "name",
@@ -186,11 +192,11 @@ class RaftTrial(Trial):
 
         get_time_str = lambda s: re.escape(s) + r": (\d+\.\d+)s"
 
-        pattern = get_time_str("centroids-update-time")
-        centroids_time = self.compute_time_avg(pattern, output, n_trials)
+        #pattern = get_time_str("centroids-update-time")
+        #centroids_time = self.compute_time_avg(pattern, output, n_trials)
 
-        pattern = get_time_str("dist-argmin-time")
-        fused_time = self.compute_time_avg(pattern, output, n_trials)
+        #pattern = get_time_str("dist-argmin-time")
+        #fused_time = self.compute_time_avg(pattern, output, n_trials)
 
         pattern = get_time_str("kmeans-time")
         match = re.search(pattern, output)
@@ -204,9 +210,12 @@ class RaftTrial(Trial):
         match = re.search(pattern, output)
         iters = int(match.group(1))
 
+        pattern = get_time_str("init-time")
+        match = re.search(pattern, output)
+        centroid_init_time = float(match.group(1))
+
         return {"runtime":kmeans_time,
-                "centroids_runtime":centroids_time,
-                "fused_runtime":fused_time,
+                "centroid_init_runtime":centroid_init_time,
                 "d":d, "k":k, "n":n,
                 "score":score,
                 "iterations":iters
@@ -252,7 +261,7 @@ def run_raft_kmeans(args):
 
         check = int(args.check)
 
-        cmd += f"./raft-bench/build/kmeans {n} {d} {k} {args.maxiters} {check} "
+        cmd += f"./raft-bench/build/kmeans {n} {d} {k} {args.maxiters} {check} {args.tol} {args.init} "
         if args.infile:
             cmd += f"{args.infile}"
         print(f"Executing {cmd}")
@@ -272,7 +281,7 @@ def run_raft_kmeans(args):
 
 def run_our_kmeans(args):
 
-    cmd = f"../build/src/bin/{args.bin}  -m {args.maxiters}  -s 1 --runs {args.ntrials}  -t 0.0001 -c {int(args.check)} " 
+    cmd = f"../build/src/bin/{args.bin}  -m {args.maxiters}  -s 1 --runs {args.ntrials}  -t {args.tol} -c {int(args.check)} -p {args.pwdist} --init {args.init} " 
     if args.infile:
         cmd += f"-i {args.infile} "
 
@@ -599,7 +608,6 @@ if __name__=="__main__":
     parser.add_argument("--n", type=int)
     parser.add_argument("--k", type=int)
     parser.add_argument("--d", type=int)
-    parser.add_argument("--dmax", type=int)
     parser.add_argument("--fname", type=str)
     parser.add_argument("--slurm", action='store_true')
     parser.add_argument("--action", type=str)
@@ -609,7 +617,10 @@ if __name__=="__main__":
     parser.add_argument("--bin", type=str)
     parser.add_argument("--ntrials", type=int, default=10)
     parser.add_argument("--maxiters", type=int, default=10)
+    parser.add_argument("--tol", type=float, default=0.00000001)
     parser.add_argument("--infile", type=str)
+    parser.add_argument("--pwdist", type=str)
+    parser.add_argument("--init", type=str)
     parser.add_argument("--check", action='store_true' )
     parser.add_argument("--kvals", nargs='+', default=default_k_vals)
     

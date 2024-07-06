@@ -319,8 +319,10 @@ void Kmeans::init_centroids_rand () {
 
 void Kmeans::init_centroids_plus_plus()
 {
+#if LOG
     std::ofstream centroids_out;
     centroids_out.open("our-centroids.out");
+#endif
 
     /* Number of currently chosen clusters */
     uint32_t n_clusters = 0;
@@ -332,27 +334,22 @@ void Kmeans::init_centroids_plus_plus()
     rmm::device_uvector<char> workspace(0, stream);
     std::random_device rd;
     std::mt19937 gen(rd());
-    raft::random::RngState rng(11);
+    raft::random::RngState rng(rd());
 
     
     /* Number of centroids to sample each iteration */
     const uint32_t s = 2 + static_cast<uint32_t>(std::ceil(std::log2(k)));
 
-    std::cout<<"s: "<<s<<std::endl;
-
     /* Randomly sample initial centroid */
     std::uniform_int_distribution<> distr(0, n-1);
 
     int32_t first_centroid_idx = distr(gen);
-    first_centroid_idx = 139;
+    //first_centroid_idx = 139;
     DATA_TYPE * d_first_centroid;
     CHECK_CUDA_ERROR(cudaMalloc(&d_first_centroid, sizeof(DATA_TYPE)*d));
     CHECK_CUDA_ERROR(cudaMemcpy(d_first_centroid, d_points+(first_centroid_idx*d), sizeof(DATA_TYPE)*d, cudaMemcpyDeviceToDevice));
 
     n_clusters++;
-
-    std::cout<<"First centroid: "<<first_centroid_idx<<std::endl;
-
 
     /* Compute distances from each point to the first centroid,
      * technically this should probably use the Kmeans-HD distances method,
@@ -447,10 +444,7 @@ void Kmeans::init_centroids_plus_plus()
     while (n_clusters < k)
     {
 
-        /*
-        raft::linalg::map(raft_handle, min_distances, min_distances,
-                []__device__(const DATA_TYPE elem) {return max(0, elem);});
-                */
+#if LOG
 
         std::vector<DATA_TYPE> h_min_distances(n);
         cudaMemcpy(h_min_distances.data(), min_distances.data_handle(),
@@ -459,6 +453,7 @@ void Kmeans::init_centroids_plus_plus()
         centroids_out<<"BEGIN MIN DISTANCES ITER "<<n_clusters-1<<std::endl;
         std::for_each(h_min_distances.begin(), h_min_distances.end(), [&](auto const& elem){centroids_out<<elem<<",";});
         centroids_out<<std::endl<<"END MIN DISTANCES ITER "<<n_clusters-1<<std::endl;
+#endif
 
         /* Randomly sample s centroids.
          * Store the indices of the sampled centroids in centroid_indices,
@@ -469,6 +464,7 @@ void Kmeans::init_centroids_plus_plus()
                                                               centroid_indices_view,
                                                               min_distances.view());
 
+#if LOG
         cusparseCsrSetPointers(K_descr, thrust::raw_pointer_cast(d_K_rowptrs.data()),
                                         thrust::raw_pointer_cast(centroid_indices.data()),
                                         thrust::raw_pointer_cast(d_K_vals.data()));
@@ -478,13 +474,14 @@ void Kmeans::init_centroids_plus_plus()
         centroids_out<<"BEGIN CENTROID INDS "<<n_clusters-1<<std::endl;
         std::for_each(h_centroid_inds.begin(), h_centroid_inds.end(), [&](auto const& elem){centroids_out<<elem<<",";});
         centroids_out<<std::endl<<"END CENTROID INDS"<<n_clusters-1<<std::endl;
+#endif
 
 
         /* Compute centroid norms by sampling from the previously computed row norms */
         thrust::gather(centroid_indices.begin(), centroid_indices.end(), 
                         d_points_row_norms.begin(),
                         d_centroids_row_norms.begin());
-
+#if LOG
         thrust::host_vector<DATA_TYPE> h_points_norms = d_points_row_norms;
         centroids_out<<"BEGIN POINTS NORMS  "<<n_clusters-1<<std::endl;
         std::for_each(h_points_norms.begin(), h_points_norms.end(), [&](auto const& elem){centroids_out<<elem<<",";});
@@ -494,6 +491,7 @@ void Kmeans::init_centroids_plus_plus()
         centroids_out<<"BEGIN CENTROID NORMS  "<<n_clusters-1<<std::endl;
         std::for_each(h_centroid_norms.begin(), h_centroid_norms.end(), [&](auto const& elem){centroids_out<<elem<<",";});
         centroids_out<<std::endl<<"END CENTROID NORMS"<<n_clusters-1<<std::endl;
+#endif
 
         /* Compute distances from points to sampled centroids */
         compute_distances_spmm(cusparseHandle,
@@ -505,6 +503,7 @@ void Kmeans::init_centroids_plus_plus()
                                 D_pp_descr,
                                 d_distances);
 
+#if LOG
         std::vector<DATA_TYPE> h_distances(n*s);
         cudaMemcpy(h_distances.data(), d_distances,
                     sizeof(DATA_TYPE)*n*s, cudaMemcpyDeviceToHost);
@@ -517,6 +516,7 @@ void Kmeans::init_centroids_plus_plus()
             centroids_out<<std::endl;
         }
         centroids_out<<std::endl<<"END DISTANCES ITER "<<n_clusters-1<<std::endl;
+#endif
 
         //TODO: This definitely isn't necessary, but for now it's fine 
         // Now d_distances is [s x n]
@@ -565,8 +565,9 @@ void Kmeans::init_centroids_plus_plus()
             int32_t min_cluster_idx = (s+1);
             raft::copy(&min_cluster_idx, &min_cluster.data()->key, 1, stream);
             raft::resource::sync_stream(raft_handle);
-
+#if LOG
             centroids_out<<"CENTROID IDX: "<<centroid_indices[min_cluster_idx]<<std::endl;
+#endif
 
 
             /* Update min_distances */
@@ -610,22 +611,8 @@ void Kmeans::init_centroids_plus_plus()
     std::vector<DATA_TYPE> vals(k);
     std::fill(vals.begin(), vals.end(), 1);
 
-    /*
-    std::vector<uint32_t> colptrs(n+1);
-    uint32_t colidx = 0;
-    for (int i=0; i<n; i++) {
-        colptrs[i] = colidx;
-        if (found.find(i) != found.end()) {
-            colidx += 1;
-        }
-    }
-    colptrs[n] = k;
-    */
 
     (cudaMemcpy(d_F_vals, vals.data(), sizeof(DATA_TYPE)*k, cudaMemcpyHostToDevice));
-    /*
-    (cudaMemcpy(d_F_colinds, thrust::raw_pointer_cast(d_F_colinds_vec.data()), sizeof(int32_t)*k, cudaMemcpyHostToDevice));
-    */
     (cudaMemcpy(d_F_row_offsets, rowptrs.data(), 
                 sizeof(int32_t)*(k+1), cudaMemcpyHostToDevice));
     
@@ -652,7 +639,7 @@ void Kmeans::init_centroids_plus_plus()
     CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_new_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
 
-
+#if LOG
     centroids_out<<"CENTROIDS"<<std::endl;
 
     for (int i=0; i<k; i++) {
@@ -663,6 +650,7 @@ void Kmeans::init_centroids_plus_plus()
     }
 
     centroids_out.close();
+#endif
 
 
     /* Cleanup */
