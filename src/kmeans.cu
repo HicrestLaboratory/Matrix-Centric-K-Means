@@ -338,13 +338,12 @@ void Kmeans::init_centroids_plus_plus()
 
     
     /* Number of centroids to sample each iteration */
-    const uint32_t s = 2 + static_cast<uint32_t>(std::ceil(std::log2(k)));
+    const uint32_t s = 2 + static_cast<uint32_t>(std::ceil(log(k)));
 
     /* Randomly sample initial centroid */
     std::uniform_int_distribution<> distr(0, n-1);
 
     int32_t first_centroid_idx = distr(gen);
-    //first_centroid_idx = 139;
     DATA_TYPE * d_first_centroid;
     CHECK_CUDA_ERROR(cudaMalloc(&d_first_centroid, sizeof(DATA_TYPE)*d));
     CHECK_CUDA_ERROR(cudaMemcpy(d_first_centroid, d_points+(first_centroid_idx*d), sizeof(DATA_TYPE)*d, cudaMemcpyDeviceToDevice));
@@ -714,7 +713,17 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
     CHECK_CUDA_ERROR(cudaMalloc(&d_points_row_norms, sizeof(DATA_TYPE)*n));
     CHECK_CUDA_ERROR(cudaMalloc(&d_centroids_row_norms, sizeof(DATA_TYPE) * k));
 
-    raft::linalg::rowNorm(d_points_row_norms, d_points, d, (uint32_t)n, raft::linalg::L2Norm, true, stream);
+    if (dist_method==Kmeans::DistanceMethod::spmm) {
+        const uint32_t diag_threads = std::min((size_t)deviceProps->maxThreadsPerBlock, n);
+        const uint32_t diag_blocks = std::ceil(static_cast<float>(n) / static_cast<float>(diag_threads));
+        copy_diag_scal<<<diag_blocks, diag_threads>>>(d_B, d_points_row_norms, n, n, -2.0);
+    } else if (dist_method==Kmeans::DistanceMethod::gemm) {
+        raft::linalg::rowNorm(d_points_row_norms, d_points, d, (uint32_t)n, raft::linalg::L2Norm, true, stream);
+    } else {
+        exit(1);
+    }
+
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
 
     /* MAIN LOOP */

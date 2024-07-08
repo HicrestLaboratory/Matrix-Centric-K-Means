@@ -238,6 +238,10 @@ uint32_t last_nk = 0;
 void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProps, 
                                 const uint32_t d1, const uint32_t n, const uint32_t k, 
                                 DATA_TYPE* d_P, DATA_TYPE* d_C, DATA_TYPE* d_distances) {
+
+    std::cerr<<"THIS SHOULD NOT BE CALLED"<<std::endl;
+    exit(1);
+
 	DATA_TYPE alpha = (DATA_TYPE)1;
 	DATA_TYPE beta = (DATA_TYPE)0;
 	uint32_t d1d1 = d1 * d1;
@@ -406,18 +410,23 @@ void schedule_copy_diag(cudaDeviceProp * props, const int kn, int * num_blocks, 
 }
 
 
-__global__ void copy_diag(const DATA_TYPE * d_tmp_arr, DATA_TYPE * d_distances, const int k, const int n) {
-	
-	const int idx = threadIdx.x + blockIdx.x * blockDim.x;
-	
-	const int matrix_base = idx / k;
+__global__ void copy_diag(const DATA_TYPE * d_M, DATA_TYPE * d_output,
+                          const int m, const int n)
+{
+    const uint32_t tid = threadIdx.x + blockIdx.x*blockDim.x;
+    if (tid < n) {
+        d_output[tid] = d_M[(tid*m) + tid];
+    }
+}
 
-	const int diag_idx = idx % k;
-
-	if (idx<(k*n)) {
-		d_distances[idx] = d_tmp_arr[matrix_base*k*k + diag_idx + diag_idx*k];
-	}
-
+__global__ void copy_diag_scal(const DATA_TYPE * d_M, DATA_TYPE * d_output,
+                          const int m, const int n,
+                          const float alpha)
+{
+    const uint32_t tid = threadIdx.x + blockIdx.x*blockDim.x;
+    if (tid < n) {
+        d_output[tid] = d_M[(tid*n) + tid]/alpha;
+    }
 }
 
 
@@ -700,6 +709,9 @@ void compute_distances_spmm(const cusparseHandle_t& handle,
 
     CHECK_CUDA_ERROR(cudaFree(d_buff));
 
+
+
+
     const uint32_t block_dim = min(n*k, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
 
@@ -708,6 +720,107 @@ void compute_distances_spmm(const cusparseHandle_t& handle,
 
 }
 
+
+void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
+                                        const uint32_t d, 
+                                        const uint32_t n,
+                                        const uint32_t k,
+                                        const DATA_TYPE * d_points_row_norms,
+                                        DATA_TYPE * d_centroids_row_norms,
+                                        const cusparseDnMatDescr_t& B,
+                                        const cusparseSpMatDescr_t& V,
+                                        cusparseDnMatDescr_t& D,
+                                        cusparseDnMatDescr_t& C,
+                                        DATA_TYPE * d_distances)
+{
+
+    /* d_distances = BV^T.
+     * Since cuSPARSE doesn't support dense-times-sparse matmul,
+     * we have to trick the SpMM routine into computing B*V^T.
+     * We compute D=V*B, but D is stored as a k*n matrix in column major order,
+     * so if we access it as if it were stored in row major order, it's like we're
+     * working with D^T.
+     */
+    const DATA_TYPE alpha = 1.0;
+    const DATA_TYPE beta = 0.0;
+    
+    size_t buff_size = 0;
+
+    CHECK_CUSPARSE_ERROR(cusparseSpMM_bufferSize(handle,
+                                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                                  &alpha,
+                                                  V,
+                                                  B,
+                                                  &beta,
+                                                  D,
+                                                  CUDA_R_32F,
+                                                  CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                                  &buff_size));
+    
+    void * d_buff;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_buff, buff_size));
+
+    CHECK_CUSPARSE_ERROR(cusparseSpMM(handle,
+                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                      &alpha,
+                                      V,
+                                      B,
+                                      &beta,
+                                      D,
+                                      CUDA_R_32F,
+                                      CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                      d_buff));
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    CHECK_CUSPARSE_ERROR(cusparseDnMatGetValues(D, (void**)&d_distances));
+
+    CHECK_CUDA_ERROR(cudaFree(d_buff));
+
+
+    /* Right now, d_distances=B*V^T.
+     * We want to first compute \tilde{C} = diag(V*d_distances).
+     * Then, we can add \tilde{P} and \tilde{C} to d_distances.
+     * d_distances is stored as d_distances^T in D, so 
+     * CC^T = d_distances^T*V^T = V*d_distances, so D is tranposed in this spmm call
+     *
+     * Note that this does perform unnecessary computation, since we only need the diagonal
+     * of CC^T. However, even given this redundant computation, this should still be more efficient
+     * for datasets with high dimensionality.
+     * A sampled SpMM routine akin to SDDMM would eliminate redundant computation, but there is currently
+     * no such routine in cuSPARSE.
+     */
+
+    CHECK_CUSPARSE_ERROR(cusparseSpMM_bufferSize(handle,
+                                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                                  CUSPARSE_OPERATION_TRANSPOSE,
+                                                  &alpha,
+                                                  V,
+                                                  D,
+                                                  &beta,
+                                                  C,
+                                                  CUDA_R_32F,
+                                                  CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                                  &buff_size));
+
+    const uint32_t block_dim_diag = min(k, 1024); //TODO Replace with device props max threads 
+    const uint32_t grid_dim_diag = ceil((float)n*k / (float)block_dim_diag);
+
+    /* Extract diagonal from CC^T */
+    DATA_TYPE * d_C_vals;
+    CHECK_CUSPARSE_ERROR(cusparseDnMatGetValues(C, (void**)(&d_C_vals)));
+    copy_diag_scal<<<grid_dim_diag, block_dim_diag>>>(d_C_vals, d_centroids_row_norms, k, k, -2.0);
+
+
+    /* Now we can add norms to d_distances */
+    const uint32_t block_dim = min(n*k, 1024); //TODO Replace with device props max threads 
+    const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
+
+    add_norm_mtx_row<<<grid_dim, block_dim>>>(n, k, d_points_row_norms, d_distances);
+    add_norm_mtx_col<<<grid_dim, block_dim>>>(n, k, d_centroids_row_norms, d_distances);
+
+}
 
 
 

@@ -72,7 +72,12 @@ void compute_gemm_distances_fast (cublasHandle_t& handle,
     const uint32_t d, const uint32_t n, const uint32_t k, 
      DATA_TYPE* d_P,  DATA_TYPE* d_C, DATA_TYPE* d_distances);
 
-__global__ void copy_diag(const DATA_TYPE * d_tmp, DATA_TYPE * d_distances, const int k, const int offset);
+__global__ void copy_diag(const DATA_TYPE * d_M, DATA_TYPE * d_output,
+                          const int m, const int n);
+__global__ void copy_diag_scal(const DATA_TYPE * d_M, DATA_TYPE * d_output,
+                          const int m, const int n,
+                          const float alpha);
+
 void compute_gemm_distances_free ();
 
 void compute_spgemm_distances (cublasHandle_t& handle, cudaDeviceProp *deviceProps, 
@@ -281,6 +286,17 @@ void compute_distances_spmm(const cusparseHandle_t& handle,
                                         const cusparseSpMatDescr_t& V,
                                         cusparseDnMatDescr_t& D,
                                         DATA_TYPE * d_distances);
+
+void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
+                                        const uint32_t d, 
+                                        const uint32_t n,
+                                        const uint32_t k,
+                                        const DATA_TYPE * d_points_row_norms,
+                                        const cusparseDnMatDescr_t& B,
+                                        const cusparseSpMatDescr_t& V,
+                                        cusparseDnMatDescr_t& D,
+                                        DATA_TYPE * d_distances);
+
 
 __global__ void check_convergence( const DATA_TYPE * d_centroids,
                                     const DATA_TYPE * d_last_centroids,
