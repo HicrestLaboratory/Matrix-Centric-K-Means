@@ -172,9 +172,15 @@ const DistanceMethod _distMethod)
     CHECK_CUDA_ERROR(cudaMalloc(&d_F_row_offsets, sizeof(int32_t)*(k+1)));
 
     h_centroids_matrix = NULL;
-	CHECK_CUDA_ERROR(cudaMalloc(&d_centroids, CENTROIDS_BYTES));
     CHECK_CUDA_ERROR(cudaHostAlloc(&h_centroids, CENTROIDS_BYTES, cudaHostAllocDefault));
-    CHECK_CUDA_ERROR(cudaMalloc(&d_new_centroids, CENTROIDS_BYTES));
+
+    if (dist_method==Kmeans::DistanceMethod::gemm) {
+        CHECK_CUDA_ERROR(cudaMalloc(&d_centroids, CENTROIDS_BYTES));
+        CHECK_CUDA_ERROR(cudaMalloc(&d_new_centroids, CENTROIDS_BYTES));
+    } else if (dist_method==Kmeans::DistanceMethod::spmm) {
+        CHECK_CUDA_ERROR(cudaMalloc(&d_CC_t, k*k*sizeof(DATA_TYPE)));
+    }
+
 
 
     /* Init matrix descriptors */
@@ -196,19 +202,26 @@ const DistanceMethod _distMethod)
                                               CUSPARSE_ORDER_ROW));
 
     if (dist_method==Kmeans::DistanceMethod::spmm) {
+
         CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&B_descr,
                                                 n, n, n,
                                                 d_B,
                                                 CUDA_R_32F,
                                                 CUSPARSE_ORDER_ROW));
+
+        CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&C_descr,
+                                                  k, k, k,
+                                                  d_CC_t,
+                                                  CUDA_R_32F,
+                                                  CUSPARSE_ORDER_ROW));
+
+    } else if (dist_method==Kmeans::DistanceMethod::gemm) {
+        CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&C_descr,
+                                                  k, d, d,
+                                                  d_new_centroids,
+                                                  CUDA_R_32F,
+                                                  CUSPARSE_ORDER_ROW));
     }
-
-
-    CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&C_descr,
-                                              k, d, d,
-                                              d_new_centroids,
-                                              CUDA_R_32F,
-                                              CUSPARSE_ORDER_ROW));
 
 #if PERFORMANCES_CENTROIDS_INIT 
 
@@ -256,8 +269,7 @@ Kmeans::~Kmeans ()
 
 	CHECK_CUDA_ERROR(cudaFreeHost(h_points));
 	CHECK_CUDA_ERROR(cudaFreeHost(h_centroids));
-	CHECK_CUDA_ERROR(cudaFree(d_centroids));
-    CHECK_CUDA_ERROR(cudaFree(d_new_centroids));
+
 	CHECK_CUDA_ERROR(cudaFree(d_points));
 
     if (d_B != NULL) {
@@ -281,6 +293,10 @@ Kmeans::~Kmeans ()
 
     if (dist_method==Kmeans::DistanceMethod::spmm) {
         CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(B_descr)); 
+        CHECK_CUDA_ERROR(cudaFree(d_CC_t));
+    } else if (dist_method==Kmeans::DistanceMethod::gemm) {
+        CHECK_CUDA_ERROR(cudaFree(d_centroids));
+        CHECK_CUDA_ERROR(cudaFree(d_new_centroids));
     }
 
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(D_descr)); 
@@ -304,6 +320,7 @@ void Kmeans::init_centroids_rand () {
     exit(1);
     init_centroid_selector(k, n, d, distr, d_F_vals, d_F_colinds, d_F_row_offsets, &F_descr);
 
+    /*
     compute_centroids_spmm(cusparseHandle, 
                             d, n, k,
                             d_new_centroids,
@@ -313,6 +330,7 @@ void Kmeans::init_centroids_rand () {
 
     CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_new_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
+    */
 
 }
 
@@ -625,7 +643,7 @@ void Kmeans::init_centroids_plus_plus()
                         CUSPARSE_INDEX_BASE_ZERO,
                         CUDA_R_32F));
 
-    /* One last spmm to actually compute the new centroids */
+    /* One last spmm to actually compute the new centroids 
     compute_centroids_spmm(cusparseHandle,
                             d, n, k,
                             d_new_centroids,
@@ -634,9 +652,9 @@ void Kmeans::init_centroids_plus_plus()
                             C_descr);
 
 
-    /* Copy centroids to appropriate host and device buffers */
     CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_new_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
+    */
 
 #if LOG
     centroids_out<<"CENTROIDS"<<std::endl;
@@ -656,6 +674,8 @@ void Kmeans::init_centroids_plus_plus()
     CHECK_CUDA_ERROR(cudaFree(d_costs));
     CHECK_CUSPARSE_ERROR(cusparseDestroySpMat(K_descr));
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(D_pp_descr));
+
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
 }
 
@@ -758,14 +778,16 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
 #endif
 
-        raft::linalg::rowNorm(d_centroids_row_norms, d_centroids, 
-                                d, k_pruned, raft::linalg::L2Norm, true, 
-                                stream);
 
         switch(dist_method)
         {
             case Kmeans::DistanceMethod::gemm:
             {
+
+                raft::linalg::rowNorm(d_centroids_row_norms, d_centroids, 
+                                        d, k_pruned, raft::linalg::L2Norm, true, 
+                                        stream);
+
                 compute_gemm_distances_arizona(cublasHandle,
                                                 d, n, k,
                                                 d_points, d_points_row_norms,
@@ -777,19 +799,21 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
             case Kmeans::DistanceMethod::spmm:
             {
                 if (iter==1) {
-                    compute_distances_spmm(cusparseHandle, 
-                                                    d, n, k_pruned,
-                                                    d_points_row_norms,
-                                                    d_centroids_row_norms,
-                                                    B_descr, F_descr,
-                                                    D_descr, d_distances);
+                    compute_distances_spmm_no_centroids(cusparseHandle, 
+                                                        d, n, k_pruned,
+                                                        d_points_row_norms,
+                                                        d_centroids_row_norms,
+                                                        B_descr, F_descr,
+                                                        D_descr, C_descr,
+                                                        d_distances);
                 } else {
-                    compute_distances_spmm(cusparseHandle, 
-                                                    d, n, k_pruned,
-                                                    d_points_row_norms,
-                                                    d_centroids_row_norms,
-                                                    B_descr, V_descr,
-                                                    D_descr, d_distances);
+                    compute_distances_spmm_no_centroids(cusparseHandle, 
+                                                        d, n, k_pruned,
+                                                        d_points_row_norms,
+                                                        d_centroids_row_norms,
+                                                        B_descr, V_descr,
+                                                        D_descr, C_descr,
+                                                        d_distances);
                 }
                 break;
             }
@@ -1098,7 +1122,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
 		///////////////////////////////////////////* COMPUTE NEW CENTROIDS *///////////////////////////////////////////
 
-		CHECK_CUDA_ERROR(cudaMemset(d_new_centroids, 0, k * d * sizeof(DATA_TYPE)));
+		//CHECK_CUDA_ERROR(cudaMemset(d_new_centroids, 0, k * d * sizeof(DATA_TYPE)));
 
 #if PERFORMANCES_KERNEL_CENTROIDS
 
@@ -1109,7 +1133,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         cudaEventRecord(e_perf_cent_start);
 
 #endif
-
         const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
         const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
 
@@ -1118,16 +1141,18 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
                                                               d_V_col_offsets, 
                                                               clusters, d_clusters_len,
                                                               n);
+        if (dist_method==Kmeans::DistanceMethod::gemm) {
 
-        compute_centroids_spmm(cusparseHandle,
-                                d, n, k,
-                                d_new_centroids,
-								V_descr,
-								P_descr,
-                                C_descr);
 
+            compute_centroids_spmm(cusparseHandle,
+                                    d, n, k,
+                                    d_new_centroids,
+                                    V_descr,
+                                    P_descr,
+                                    C_descr);
+
+        }
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-        
 
 #if PERFORMANCES_KERNEL_CENTROIDS
 
@@ -1204,6 +1229,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 		/////////////////////////////////////////////* CHECK IF CONVERGED */////////////////////////////////////////////
 
 		// Check exit
+        /*
         auto sqrd_norm = raft::make_device_scalar(raft_handle, DATA_TYPE(0));
         raft::linalg::mapThenSumReduce(sqrd_norm.data_handle(),
                                          d*k,
@@ -1214,6 +1240,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
         DATA_TYPE sqrd_norm_err = 0;
         raft::copy(&sqrd_norm_err, sqrd_norm.data_handle(), sqrd_norm.size(), stream);
+        */
 
 #if PRUNE_CENTROIDS
         if (iter > 1) {
@@ -1229,7 +1256,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
             CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_new_centroids, CENTROIDS_BYTES, cudaMemcpyDeviceToDevice));
         }
 #else
-        CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_new_centroids, CENTROIDS_BYTES, cudaMemcpyDeviceToDevice));
+        //CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_new_centroids, CENTROIDS_BYTES, cudaMemcpyDeviceToDevice));
 #endif
 
         rmm::device_scalar<DATA_TYPE> d_score(stream);
@@ -1248,12 +1275,16 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
             break;
         }
 
-        if (check_converged && (iter > 1) && (sqrd_norm_err < tol)) {
+        if (check_converged && 
+            (iter > 1) && 
+            (std::abs(score-last_score) < tol)) {
             converged = iter;
             thrust::copy(clusters, clusters+n, d_clusters.begin());
             thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
             break;
         } 
+
+        last_score = score;
 
 #if LOG
         centroids_out<<"END ITERATION "<<(iter-1)<<std::endl;
@@ -1265,10 +1296,12 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
     centroids_out.close();
 #endif
 	/* MAIN LOOP END */
+    /*
     CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, 
                                 d_centroids, 
                                 d * k * sizeof(DATA_TYPE), 
                                 cudaMemcpyDeviceToHost));
+                                */
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
 

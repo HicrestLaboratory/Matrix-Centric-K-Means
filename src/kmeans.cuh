@@ -110,6 +110,7 @@ class Kmeans {
     std::vector<uint32_t>  h_points_clusters;
     DATA_TYPE* d_points;
     DATA_TYPE* d_centroids;
+    DATA_TYPE* d_CC_t;
 
     DATA_TYPE* d_B;
 
@@ -130,6 +131,7 @@ class Kmeans {
 
 
     DATA_TYPE score;
+    DATA_TYPE last_score;
 
     cudaDeviceProp* deviceProps;
 

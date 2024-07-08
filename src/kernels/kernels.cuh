@@ -292,9 +292,11 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
                                         const uint32_t n,
                                         const uint32_t k,
                                         const DATA_TYPE * d_points_row_norms,
+                                        DATA_TYPE * d_centroids_row_norms,
                                         const cusparseDnMatDescr_t& B,
                                         const cusparseSpMatDescr_t& V,
                                         cusparseDnMatDescr_t& D,
+                                        cusparseDnMatDescr_t& C,
                                         DATA_TYPE * d_distances);
 
 

@@ -709,9 +709,6 @@ void compute_distances_spmm(const cusparseHandle_t& handle,
 
     CHECK_CUDA_ERROR(cudaFree(d_buff));
 
-
-
-
     const uint32_t block_dim = min(n*k, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
 
@@ -804,8 +801,24 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
                                                   CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
                                                   &buff_size));
 
+    CHECK_CUDA_ERROR(cudaMalloc(&d_buff, buff_size));
+
+    CHECK_CUSPARSE_ERROR(cusparseSpMM(handle,
+                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                      CUSPARSE_OPERATION_TRANSPOSE,
+                                      &alpha,
+                                      V,
+                                      D,
+                                      &beta,
+                                      C,
+                                      CUDA_R_32F,
+                                      CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                      d_buff));
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    CHECK_CUDA_ERROR(cudaFree(d_buff));
+
     const uint32_t block_dim_diag = min(k, 1024); //TODO Replace with device props max threads 
-    const uint32_t grid_dim_diag = ceil((float)n*k / (float)block_dim_diag);
+    const uint32_t grid_dim_diag = ceil((float)k / (float)block_dim_diag);
 
     /* Extract diagonal from CC^T */
     DATA_TYPE * d_C_vals;
@@ -817,8 +830,12 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
     const uint32_t block_dim = min(n*k, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
 
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
     add_norm_mtx_row<<<grid_dim, block_dim>>>(n, k, d_points_row_norms, d_distances);
     add_norm_mtx_col<<<grid_dim, block_dim>>>(n, k, d_centroids_row_norms, d_distances);
+
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
 }
 
