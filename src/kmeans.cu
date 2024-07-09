@@ -131,10 +131,17 @@ const DistanceMethod _distMethod)
     cudaEventRecord(e_perf_bmult_start);
 #endif
     if (dist_method==Kmeans::DistanceMethod::spmm) {
+
         /* Init B */
+        DATA_TYPE * d_B_tmp;
         CHECK_CUDA_ERROR(cudaMalloc(&d_B, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
+        CHECK_CUDA_ERROR(cudaMalloc(&d_B_tmp, sizeof(DATA_TYPE)*n*n)); 
+        CHECK_CUDA_ERROR(cudaMemset(d_B_tmp, 0, sizeof(DATA_TYPE)*n*n)); //Just in case
         float b_alpha = -2.0;
         float b_beta = 0.0;
+
+
+        /*
         CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle, 
                                         CUBLAS_OP_T,
                                         CUBLAS_OP_N,
@@ -144,6 +151,41 @@ const DistanceMethod _distMethod)
                                         d_points, d,
                                         &b_beta,
                                         d_B, n));
+                                        */
+
+        CHECK_CUBLAS_ERROR(cublasSsyrk(cublasHandle,
+                                       CUBLAS_FILL_MODE_LOWER,
+                                       CUBLAS_OP_T,
+                                       n, d, 
+                                       &b_alpha,
+                                       d_points, d,
+                                       &b_beta,
+                                       d_B_tmp, n));
+
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+
+        b_alpha = 1.0;
+        b_beta = 1.0;
+        CHECK_CUBLAS_ERROR(cublasSgeam(cublasHandle,
+                                       CUBLAS_OP_T,
+                                       CUBLAS_OP_N,
+                                       n, n,
+                                       &b_alpha,
+                                       d_B_tmp, n,
+                                       &b_beta,
+                                       d_B_tmp, n,
+                                       d_B, n));
+        const uint32_t scale_diag_b_block_dim = std::min((size_t)deviceProps->maxThreadsPerBlock, n);
+        const uint32_t scale_diag_b_grid_dim = static_cast<float>(n)/static_cast<float>(scale_diag_b_block_dim);
+
+        scale_diag<<<scale_diag_b_grid_dim, scale_diag_b_block_dim>>>(d_B, n, 0.5);
+
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+
+        CHECK_CUDA_ERROR(cudaFree(d_B_tmp));
+
     } else {
         d_B = nullptr;
     }

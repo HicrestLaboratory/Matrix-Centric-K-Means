@@ -76,7 +76,9 @@ __global__ void copy_diag(const DATA_TYPE * d_M, DATA_TYPE * d_output,
                           const int m, const int n);
 __global__ void copy_diag_scal(const DATA_TYPE * d_M, DATA_TYPE * d_output,
                           const int m, const int n,
-                          const float alpha);
+                          const DATA_TYPE alpha);
+
+__global__ void scale_diag(DATA_TYPE * d_M, const uint32_t n, const DATA_TYPE alpha);
 
 void compute_gemm_distances_free ();
 
