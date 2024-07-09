@@ -200,7 +200,7 @@ void my_kmeans_fit_main(raft::resources const& handle,
 
             if (n_iter[0] > 1) {
                 DataT delta = curClusteringCost / priorClusteringCost;
-                //if (delta > 1 - params.tol) done = true;
+                if (delta > 1 - params.tol) done = true;
             }
             priorClusteringCost = curClusteringCost;
         }
@@ -221,8 +221,6 @@ void my_kmeans_fit_main(raft::resources const& handle,
 #endif
 
     n_iter[0]--;
-
-    std::cout<<"n_iter[0] "<<n_iter[0]<<std::endl;
 
     auto centroids = raft::make_device_matrix_view<DataT, IndexT>(
         centroidsRawData.data_handle(), n_clusters, n_features);
