@@ -188,8 +188,8 @@ void init_centroid_selector(const uint32_t s,
                             const uint32_t d,
                             Distribution& distr,
                             DATA_TYPE * d_F_vals,
-                            int32_t * d_F_rowinds,
-                            int32_t * d_F_colptrs,
+                            int32_t * d_F_colinds,
+                            int32_t * d_F_rowptrs,
                             cusparseSpMatDescr_t * F_descr)
 {
     /* Generate k distinct random point indices for the initial centroid set */
@@ -198,39 +198,31 @@ void init_centroid_selector(const uint32_t s,
     std::random_device rd;
     std::mt19937 gen(rd());
 
+    std::vector<uint32_t> colinds(s);
     while (found.size() < s) 
     {
         int curr = distr(gen);
         if (found.find(curr) == found.end()) {
+            colinds[found.size()] = curr;
             found.insert(curr);
         }
     }
 
-    std::vector<uint32_t> rowinds(s);
-    for (int i=0; i<s; i++)
-        rowinds[i] = i;
 
     std::vector<DATA_TYPE> vals(s);
     std::fill(vals.begin(), vals.end(), 1);
 
-    std::vector<uint32_t> colptrs(n+1);
-    uint32_t colidx = 0;
-    for (int i=0; i<n; i++) {
-        colptrs[i] = colidx;
-        if (found.find(i) != found.end()) {
-            colidx += 1;
-        }
-    }
-    colptrs[n] = s;
+    std::vector<uint32_t> rowptrs(s+1);
+    std::iota(rowptrs.begin(), rowptrs.end(), 0);
 
     (cudaMemcpy(d_F_vals, vals.data(), sizeof(DATA_TYPE)*s, cudaMemcpyHostToDevice));
-    (cudaMemcpy(d_F_rowinds, rowinds.data(), sizeof(uint32_t)*s, cudaMemcpyHostToDevice));
-    (cudaMemcpy(d_F_colptrs, colptrs.data(), sizeof(uint32_t)*(n+1), cudaMemcpyHostToDevice));
+    (cudaMemcpy(d_F_colinds, colinds.data(), sizeof(uint32_t)*s, cudaMemcpyHostToDevice));
+    (cudaMemcpy(d_F_rowptrs, rowptrs.data(), sizeof(uint32_t)*(s+1), cudaMemcpyHostToDevice));
     
-    (cusparseCreateCsc(F_descr,
+    (cusparseCreateCsr(F_descr,
                         s, n, s,
-                        d_F_colptrs,
-                        d_F_rowinds,
+                        d_F_rowptrs,
+                        d_F_colinds,
                         d_F_vals,
                         CUSPARSE_INDEX_32I,
                         CUSPARSE_INDEX_32I,
