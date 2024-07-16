@@ -232,7 +232,7 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
 
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-        Kernel::function(n, d_B);
+        Kernel::function(n, d, d_B);
 
     } else {
         float b_alpha = 1.0;
@@ -252,7 +252,7 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
 
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-        Kernel::function(n, d_B);
+        Kernel::function(n, d, d_B);
 
         b_alpha = -2.0;
         b_beta = -2.0;

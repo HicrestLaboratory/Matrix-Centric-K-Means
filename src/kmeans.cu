@@ -134,7 +134,7 @@ const DistanceMethod _distMethod)
     if (dist_method==Kmeans::DistanceMethod::spmm) {
         /* Init B */
         CHECK_CUDA_ERROR(cudaMalloc(&d_B, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
-        init_kernel_mtx<NullKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
+        init_kernel_mtx<SigmoidKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
     } else {
         d_B = nullptr;
     }
