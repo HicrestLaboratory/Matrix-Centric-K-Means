@@ -56,7 +56,7 @@ class KmeansTrial(Trial):
         if "memcpy" in pattern:
             start_idx = 1
         else:
-            start_idx = 2 
+            start_idx = 1 
 
         match = re.findall(pattern, output)
         lst = [float(t) for t in match[start_idx:]]
@@ -68,6 +68,7 @@ class KmeansTrial(Trial):
     def get_iterations(self, output, n_trials, maxiters):
 
         iters = 0
+        n = 0
 
         for line in output.splitlines():
 
@@ -75,11 +76,16 @@ class KmeansTrial(Trial):
                 split_str = line.split("iteration")[1].split("-")[0]
                 curr_iters = int(split_str)
                 iters += curr_iters
+                n+=1
 
             elif "NOT" in line:
                 iters += maxiters
+                n+=1
 
-        return iters // n_trials
+        if n==0:
+            return 0
+
+        return iters // n 
 
 
     def parse_output(self, result, n_trials, maxiters):
@@ -171,7 +177,7 @@ class RaftTrial(Trial):
         if "memcpy" in pattern:
             start_idx = 1
         else:
-            start_idx = 2 
+            start_idx = 1 
 
         match = re.findall(pattern, output)
         lst = [float(t) for t in match[start_idx:]]
