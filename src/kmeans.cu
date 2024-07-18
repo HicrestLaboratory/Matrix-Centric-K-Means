@@ -216,7 +216,7 @@ const DistanceMethod _distMethod)
                                                   CUSPARSE_ORDER_ROW));
     }
 
-#if PERFORMANCES_CENTROIDS_INIT 
+#if PERFORMANCES_CENTROIDS_INIT
 
     cudaEvent_t e_centroid_init_start, e_centroid_init_stop;
 
@@ -255,7 +255,7 @@ const DistanceMethod _distMethod)
 
 }
 
-Kmeans::~Kmeans () 
+Kmeans::~Kmeans ()
 {
 
 	delete generator;
@@ -281,20 +281,20 @@ Kmeans::~Kmeans ()
     CHECK_CUDA_ERROR(cudaFree(d_F_colinds));
     CHECK_CUDA_ERROR(cudaFree(d_F_row_offsets));
 
-    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(P_descr)); 
-    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(C_descr)); 
+    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(P_descr));
+    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(C_descr));
 
     if (dist_method==Kmeans::DistanceMethod::spmm) {
-        CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(B_descr)); 
+        CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(B_descr));
         CHECK_CUDA_ERROR(cudaFree(d_CC_t));
     } else if (dist_method==Kmeans::DistanceMethod::gemm) {
         CHECK_CUDA_ERROR(cudaFree(d_centroids));
         CHECK_CUDA_ERROR(cudaFree(d_new_centroids));
     }
 
-    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(D_descr)); 
-    CHECK_CUSPARSE_ERROR(cusparseDestroySpMat(V_descr)); 
-    CHECK_CUSPARSE_ERROR(cusparseDestroySpMat(F_descr)); 
+    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(D_descr));
+    CHECK_CUSPARSE_ERROR(cusparseDestroySpMat(V_descr));
+    CHECK_CUSPARSE_ERROR(cusparseDestroySpMat(F_descr));
 
     CHECK_CUSPARSE_ERROR(cusparseDestroy(cusparseHandle));
     CHECK_CUBLAS_ERROR(cublasDestroy(cublasHandle));
@@ -313,6 +313,7 @@ void Kmeans::init_centroids_rand () {
 
 void Kmeans::init_centroids_plus_plus()
 {
+#ifdef PLUSPLUS
 #if LOG
     std::ofstream centroids_out;
     centroids_out.open("our-centroids.out");
@@ -330,7 +331,7 @@ void Kmeans::init_centroids_plus_plus()
     std::mt19937 gen(rd());
     raft::random::RngState rng(rd());
 
-    
+
     /* Number of centroids to sample each iteration */
     const uint32_t s = 2 + static_cast<uint32_t>(std::ceil(log(k)));
 
@@ -356,7 +357,7 @@ void Kmeans::init_centroids_plus_plus()
     auto points_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_points, n, d);
 
     thrust::device_vector<DATA_TYPE> d_points_row_norms(n);
-    raft::linalg::rowNorm(thrust::raw_pointer_cast(d_points_row_norms.data()), 
+    raft::linalg::rowNorm(thrust::raw_pointer_cast(d_points_row_norms.data()),
                             d_points, d, (uint32_t)n, raft::linalg::L2Norm, true, stream);
 
     auto points_row_norms_view = raft::make_device_vector_view<DATA_TYPE, uint32_t>(thrust::raw_pointer_cast(d_points_row_norms.data()), n);
@@ -397,7 +398,7 @@ void Kmeans::init_centroids_plus_plus()
                                             CUSPARSE_INDEX_BASE_ZERO,
                                             CUDA_R_32F));
 
-    
+
     /* Setup descriptor and buffers for D_pp */
     cusparseDnMatDescr_t D_pp_descr;
     auto d_distances_span = raft::make_device_matrix<DATA_TYPE, uint32_t>(raft_handle, n, s);
@@ -406,13 +407,13 @@ void Kmeans::init_centroids_plus_plus()
     DATA_TYPE * d_distances = d_distances_span.data_handle();
     DATA_TYPE * d_distances_transpose = d_distances_transpose_span.data_handle();
 
-    CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&D_pp_descr, 
+    CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&D_pp_descr,
                                              s, n, s,
                                              d_distances,
                                              CUDA_R_32F,
                                              CUSPARSE_ORDER_COL));
 
-    
+
     /* Norms of centroids, which are just norms of points here */
     thrust::device_vector<DATA_TYPE> d_centroids_row_norms(s);
 
@@ -425,14 +426,14 @@ void Kmeans::init_centroids_plus_plus()
     /* Stores index of centroid to be added from each sample */
     rmm::device_scalar<cub::KeyValuePair<int32_t, DATA_TYPE>> min_cluster(stream);
 
-    
+
 
     /* Main loop:
      * sample s centroids according to min_distances
      * init K using sampled centroid indices
      * compute next round of distances using spmm
      * choose centroid from candidates with lowest cluster cost
-     * repeat until k centroids chosen 
+     * repeat until k centroids chosen
      */
     while (n_clusters < k)
     {
@@ -453,7 +454,7 @@ void Kmeans::init_centroids_plus_plus()
          * which doubles as the colinds array of K.
          */
         raft::random::discrete<int32_t, DATA_TYPE, uint32_t>(raft_handle,
-                                                              rng, 
+                                                              rng,
                                                               centroid_indices_view,
                                                               min_distances.view());
 
@@ -461,7 +462,7 @@ void Kmeans::init_centroids_plus_plus()
         cusparseCsrSetPointers(K_descr, thrust::raw_pointer_cast(d_K_rowptrs.data()),
                                         thrust::raw_pointer_cast(centroid_indices.data()),
                                         thrust::raw_pointer_cast(d_K_vals.data()));
-        
+
 
         thrust::host_vector<int32_t> h_centroid_inds = centroid_indices;
         centroids_out<<"BEGIN CENTROID INDS "<<n_clusters-1<<std::endl;
@@ -471,7 +472,7 @@ void Kmeans::init_centroids_plus_plus()
 
 
         /* Compute centroid norms by sampling from the previously computed row norms */
-        thrust::gather(centroid_indices.begin(), centroid_indices.end(), 
+        thrust::gather(centroid_indices.begin(), centroid_indices.end(),
                         d_points_row_norms.begin(),
                         d_centroids_row_norms.begin());
 #if LOG
@@ -479,7 +480,7 @@ void Kmeans::init_centroids_plus_plus()
         centroids_out<<"BEGIN POINTS NORMS  "<<n_clusters-1<<std::endl;
         std::for_each(h_points_norms.begin(), h_points_norms.end(), [&](auto const& elem){centroids_out<<elem<<",";});
         centroids_out<<std::endl<<"END POINTS NORMS"<<n_clusters-1<<std::endl;
-        
+
         thrust::host_vector<DATA_TYPE> h_centroid_norms = d_centroids_row_norms;
         centroids_out<<"BEGIN CENTROID NORMS  "<<n_clusters-1<<std::endl;
         std::for_each(h_centroid_norms.begin(), h_centroid_norms.end(), [&](auto const& elem){centroids_out<<elem<<",";});
@@ -511,7 +512,7 @@ void Kmeans::init_centroids_plus_plus()
         centroids_out<<std::endl<<"END DISTANCES ITER "<<n_clusters-1<<std::endl;
 #endif
 
-        //TODO: This definitely isn't necessary, but for now it's fine 
+        //TODO: This definitely isn't necessary, but for now it's fine
         // Now d_distances is [s x n]
         raft::linalg::transpose(raft_handle, d_distances_span.view(), d_distances_transpose_span.view());
 
@@ -587,15 +588,6 @@ void Kmeans::init_centroids_plus_plus()
 
     }
 
-    /*
-    centroids_out<<"BEGIN CENTROID INDICES"<<std::endl;
-    thrust::host_vector<int32_t> h_F_colinds(k);
-    CHECK_CUDA_ERROR(cudaMemcpy(thrust::raw_pointer_cast(h_F_colinds.data()), d_F_colinds, sizeof(int32_t)*k,
-                                cudaMemcpyDeviceToHost));
-    std::for_each(h_F_colinds.begin(), h_F_colinds.end(), [&](auto const& elem) {centroids_out<<elem<<",";});
-    centroids_out<<std::endl<<"END CENTROID INDICES"<<std::endl;
-    */
-
     /* Build F */
     //TODO: Do this on the device
     std::vector<int32_t> rowptrs(k+1);
@@ -606,9 +598,9 @@ void Kmeans::init_centroids_plus_plus()
 
 
     (cudaMemcpy(d_F_vals, vals.data(), sizeof(DATA_TYPE)*k, cudaMemcpyHostToDevice));
-    (cudaMemcpy(d_F_row_offsets, rowptrs.data(), 
+    (cudaMemcpy(d_F_row_offsets, rowptrs.data(),
                 sizeof(int32_t)*(k+1), cudaMemcpyHostToDevice));
-    
+
     (cusparseCreateCsr(&F_descr,
                         k, n, k,
                         d_F_row_offsets,
@@ -618,19 +610,6 @@ void Kmeans::init_centroids_plus_plus()
                         CUSPARSE_INDEX_32I,
                         CUSPARSE_INDEX_BASE_ZERO,
                         CUDA_R_32F));
-
-    /* One last spmm to actually compute the new centroids 
-    compute_centroids_spmm(cusparseHandle,
-                            d, n, k,
-                            d_new_centroids,
-                            F_descr,
-                            P_descr,
-                            C_descr);
-
-
-    CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, d_new_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, d * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
-    */
 
 #if LOG
     centroids_out<<"CENTROIDS"<<std::endl;
@@ -652,6 +631,7 @@ void Kmeans::init_centroids_plus_plus()
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(D_pp_descr));
 
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+#endif
 
 }
 
@@ -731,8 +711,8 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
     /* COMPUTE DISTANCES */
 
 #if LOG
-        CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_new_centroids, 
-                                    d * k * sizeof(DATA_TYPE), 
+        CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_new_centroids,
+                                    d * k * sizeof(DATA_TYPE),
                                     cudaMemcpyDeviceToHost));
         centroids_out<<"CENTROIDS"<<std::endl;
 
@@ -760,8 +740,8 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
             case Kmeans::DistanceMethod::gemm:
             {
 
-                raft::linalg::rowNorm(d_centroids_row_norms, d_centroids, 
-                                        d, k_pruned, raft::linalg::L2Norm, true, 
+                raft::linalg::rowNorm(d_centroids_row_norms, d_centroids,
+                                        d, k_pruned, raft::linalg::L2Norm, true,
                                         stream);
 
                 compute_gemm_distances_arizona(cublasHandle,
@@ -775,7 +755,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
             case Kmeans::DistanceMethod::spmm:
             {
                 if (iter==1) {
-                    compute_distances_spmm_no_centroids(cusparseHandle, 
+                    compute_distances_spmm_no_centroids(cusparseHandle,
                                                         d, n, k_pruned,
                                                         d_points_row_norms,
                                                         d_centroids_row_norms,
@@ -783,7 +763,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
                                                         D_descr, C_descr,
                                                         d_distances);
                 } else {
-                    compute_distances_spmm_no_centroids(cusparseHandle, 
+                    compute_distances_spmm_no_centroids(cusparseHandle,
                                                         d, n, k_pruned,
                                                         d_points_row_norms,
                                                         d_centroids_row_norms,
@@ -837,15 +817,15 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
         int anyError = 0;
 
-        CHECK_CUDA_ERROR(cudaMemcpy(tmp_dist, d_distances, 
-                                    n * k * sizeof(DATA_TYPE), 
+        CHECK_CUDA_ERROR(cudaMemcpy(tmp_dist, d_distances,
+                                    n * k * sizeof(DATA_TYPE),
                                     cudaMemcpyDeviceToHost));
 
         for (uint32_t i = 0; i < n; ++i)
             for (uint32_t j = 0; j < k; ++j)
                 if (fabs(tmp_dist[i * k + j] - cpu_distances[i * k + j]) > 0.001) {
-                    printf("N=%-2u K=%-2u -> GPU=%.4f CPU=%.4f diff: %.8f\n", 
-                            i, j, tmp_dist[i * k + j], cpu_distances[i * k + j], 
+                    printf("N=%-2u K=%-2u -> GPU=%.4f CPU=%.4f diff: %.8f\n",
+                            i, j, tmp_dist[i * k + j], cpu_distances[i * k + j],
                             fabs(tmp_dist[i * k + j] - cpu_distances[i * k + j]));
                     anyError = 1;
                 }
@@ -931,11 +911,11 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         thrust::copy(clusters, clusters+n, d_clusters.begin());
 
 
-        // Begin centroid pruning 
+        // Begin centroid pruning
         if (iter > 1) {
 
 
-            thrust::fill(raft::resource::get_thrust_policy(raft_handle), 
+            thrust::fill(raft::resource::get_thrust_policy(raft_handle),
                             d_stationary_clusters.begin(), d_stationary_clusters.end(), 1);
 
             // TODO: Replace this with thrust::transform
@@ -1026,7 +1006,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
             d_offsets = h_offsets; //Copy to device
 
-            /* d_offsets will be added to the clusters array after it's computed with argmin during the 
+            /* d_offsets will be added to the clusters array after it's computed with argmin during the
              * next iteration
              */
 
@@ -1051,7 +1031,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 #endif
 
 
-        //reduce_cols_by_key to compute cluster d_clusters_len 
+        //reduce_cols_by_key to compute cluster d_clusters_len
 
         raft::linalg::reduce_cols_by_key(one_vec.data_handle(),
                                             clusters,
@@ -1085,8 +1065,8 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         thrust::copy(clusters, clusters+n, std::begin(d_points_clusters_vec));
 
         std::vector<uint32_t> tmp1(n);
-        thrust::copy(d_points_clusters_vec.begin(), 
-                d_points_clusters_vec.end(), 
+        thrust::copy(d_points_clusters_vec.begin(),
+                d_points_clusters_vec.end(),
                     std::begin(tmp1));
 
         printf(GREEN "p  -> c\n");
@@ -1112,9 +1092,9 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
         const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
 
-        compute_v_sparse<<<v_mat_grid_dim, v_mat_block_dim>>>(d_V_vals, 
-                                                              d_V_rowinds, 
-                                                              d_V_col_offsets, 
+        compute_v_sparse<<<v_mat_grid_dim, v_mat_block_dim>>>(d_V_vals,
+                                                              d_V_rowinds,
+                                                              d_V_col_offsets,
                                                               clusters, d_clusters_len,
                                                               n);
         if (dist_method==Kmeans::DistanceMethod::gemm) {
@@ -1153,9 +1133,9 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
         uint32_t* h_clusters_len;
         CHECK_CUDA_ERROR(cudaMallocHost(&h_clusters_len, k * sizeof(uint32_t)));
-        CHECK_CUDA_ERROR(cudaMemcpy(h_clusters_len, 
-                                    d_clusters_len,	
-                                    k * sizeof(uint32_t), 
+        CHECK_CUDA_ERROR(cudaMemcpy(h_clusters_len,
+                                    d_clusters_len,
+                                    k * sizeof(uint32_t),
                                     cudaMemcpyDeviceToHost));
 
         for (uint32_t i = 0; i < n; ++i) {
@@ -1169,7 +1149,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
                 uint64_t count = h_clusters_len[i] > 1 ? h_clusters_len[i] : 1;
                 DATA_TYPE scale = 1.0 / ((double) count);
                 h_centroids[i * d + j] *= scale;
-            
+
             }
         }
 
@@ -1182,8 +1162,8 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         }
 
         CHECK_CUDA_ERROR(cudaMemset(h_centroids, 0, d * k * sizeof(DATA_TYPE)));
-        CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_new_centroids, 
-                                    d * k * sizeof(DATA_TYPE), 
+        CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_new_centroids,
+                                    d * k * sizeof(DATA_TYPE),
                                     cudaMemcpyDeviceToHost));
 
         cout << endl << "CENTROIDS (GPU)" << endl;
@@ -1237,7 +1217,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
         rmm::device_scalar<DATA_TYPE> d_score(stream);
         raft::cluster::detail::computeClusterCost(
-                                                raft_handle, 
+                                                raft_handle,
                                                 min_cluster_and_distance.view(),
                                                 workspace,
                                                 raft::make_device_scalar_view(d_score.data()),
@@ -1251,14 +1231,14 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
             break;
         }
 
-        if (check_converged && 
-            (iter > 1) && 
+        if (check_converged &&
+            (iter > 1) &&
             (std::abs(score-last_score) < tol)) {
             converged = iter;
             thrust::copy(clusters, clusters+n, d_clusters.begin());
             thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
             break;
-        } 
+        }
 
         last_score = score;
 
@@ -1273,9 +1253,9 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 #endif
 	/* MAIN LOOP END */
     /*
-    CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, 
-                                d_centroids, 
-                                d * k * sizeof(DATA_TYPE), 
+    CHECK_CUDA_ERROR(cudaMemcpy(h_centroids,
+                                d_centroids,
+                                d * k * sizeof(DATA_TYPE),
                                 cudaMemcpyDeviceToHost));
                                 */
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
@@ -1309,8 +1289,3 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
 	return converged;
 }
-
-
-
-
-
