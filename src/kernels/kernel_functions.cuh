@@ -5,7 +5,7 @@
 #include <cublas_v2.h>
 #include <cusparse.h>
 
-/* CUDA compute kernels */
+/* Compute kernels */
 __global__ static void sigmoid(const uint32_t n,
                                DATA_TYPE * d_B,
                                const DATA_TYPE gamma,
@@ -20,11 +20,11 @@ __global__ static void sigmoid(const uint32_t n,
 
 /* Kernel structs */
 
-struct NullKernel {
+struct LinearKernel {
     static void function(const uint32_t n,
                          const uint32_t d,
                          DATA_TYPE * d_B)
-    {}
+    {/* Do nothing, since matmul already applied this kernel */}
 };
 
 

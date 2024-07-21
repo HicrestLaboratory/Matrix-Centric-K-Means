@@ -132,9 +132,11 @@ const DistanceMethod _distMethod)
 #endif
 
     if (dist_method==Kmeans::DistanceMethod::spmm) {
+
         /* Init B */
         CHECK_CUDA_ERROR(cudaMalloc(&d_B, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
-        init_kernel_mtx<SigmoidKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
+        init_kernel_mtx<LinearKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
+
     } else {
         d_B = nullptr;
     }
@@ -313,7 +315,7 @@ void Kmeans::init_centroids_rand () {
 
 void Kmeans::init_centroids_plus_plus()
 {
-#ifdef PLUSPLUS
+#ifdef PLUSPLUS //This is here because otherwise this takes literally 10 MINUTES to compile
 #if LOG
     std::ofstream centroids_out;
     centroids_out.open("our-centroids.out");
@@ -643,13 +645,11 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
     uint64_t iter = 0;
 
     const raft::resources raft_handle;
-
     const cudaStream_t stream = raft::resource::get_cuda_stream(raft_handle);
+
     rmm::device_uvector<char> workspace(0, stream);
 
-
     thrust::device_vector<uint32_t> d_clusters(n);
-
 
     auto one_vec = raft::make_device_vector<uint32_t>(raft_handle, n);
     thrust::fill(raft::resource::get_thrust_policy(raft_handle),
