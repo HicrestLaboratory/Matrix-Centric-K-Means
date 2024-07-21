@@ -1,9 +1,12 @@
 #ifndef __KMEANS__
 #define __KMEANS__
 
-#include <random>
 #include "include/common.h"
 #include "include/point.hpp"
+#include "kernels/kernel_functions.cuh"
+
+#include <random>
+
 #include <cublas_v2.h>
 #include <cub/cub.cuh>
 

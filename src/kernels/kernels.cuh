@@ -12,6 +12,7 @@
 
 #include "kernel_functions.cuh"
 
+
 #define DISTANCES_SHFL_MASK 0xFFFFFFFF
 #define ARGMIN_SHFL_MASK    0xFFFFFFFF
 #define CENTROIDS_SHFL_MASK 0xFFFFFFFF
@@ -20,6 +21,7 @@ struct Pair {
   float v;
   uint32_t i;
 };
+
 
 /*////// SCHEDULE FUNCTIONS ///////*/
 
@@ -81,7 +83,6 @@ __global__ void copy_diag_scal(const DATA_TYPE * d_M, DATA_TYPE * d_output,
                           const int m, const int n,
                           const DATA_TYPE alpha);
 
-__global__ void scale_diag(DATA_TYPE * d_M, const uint32_t n, const DATA_TYPE alpha);
 
 void compute_gemm_distances_free ();
 
@@ -207,75 +208,6 @@ __global__ void compute_v_blocked(const uint32_t block_size,
 }
 
 
-template <typename Kernel>
-void init_kernel_mtx(cublasHandle_t& cublasHandle,
-                     cudaDeviceProp * deviceProps,
-                     const uint32_t n,
-                     const uint32_t k,
-                     const uint32_t d,
-                     const DATA_TYPE * d_points,
-                     DATA_TYPE * d_B)
-{
-    float b_beta = 0.0;
-
-    if (n<=1000) {
-        float b_alpha = -2.0;
-        CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle, 
-                                        CUBLAS_OP_T,
-                                        CUBLAS_OP_N,
-                                        n, n, d,
-                                        &b_alpha,
-                                        d_points, d,
-                                        d_points, d,
-                                        &b_beta,
-                                        d_B, n));
-
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
-        Kernel::function(n, d, d_B);
-
-    } else {
-        float b_alpha = 1.0;
-
-        DATA_TYPE * d_B_tmp;
-        CHECK_CUDA_ERROR(cudaMalloc(&d_B_tmp, sizeof(DATA_TYPE)*n*n)); //TODO: Just allocate space for triangular region
-        CHECK_CUDA_ERROR(cudaMemset(d_B_tmp, 0, sizeof(DATA_TYPE)*n*n)); //Just in case
-
-        CHECK_CUBLAS_ERROR(cublasSsyrk(cublasHandle,
-                                       CUBLAS_FILL_MODE_LOWER,
-                                       CUBLAS_OP_T,
-                                       n, d, 
-                                       &b_alpha,
-                                       d_points, d,
-                                       &b_beta,
-                                       d_B_tmp, n));
-
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
-        Kernel::function(n, d, d_B);
-
-        b_alpha = -2.0;
-        b_beta = -2.0;
-        CHECK_CUBLAS_ERROR(cublasSgeam(cublasHandle,
-                                       CUBLAS_OP_T,
-                                       CUBLAS_OP_N,
-                                       n, n,
-                                       &b_alpha,
-                                       d_B_tmp, n,
-                                       &b_beta,
-                                       d_B_tmp, n,
-                                       d_B, n));
-        const uint32_t scale_diag_b_block_dim = std::min((uint32_t)deviceProps->maxThreadsPerBlock, n);
-        const uint32_t scale_diag_b_grid_dim = static_cast<float>(n)/static_cast<float>(scale_diag_b_block_dim);
-
-        scale_diag<<<scale_diag_b_grid_dim, scale_diag_b_block_dim>>>(d_B, n, 0.5);
-
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-        CHECK_CUDA_ERROR(cudaFree(d_B_tmp));
-    }
-
-    
-}
                     
 
 
@@ -401,6 +333,78 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
                                         cusparseDnMatDescr_t& D,
                                         cusparseDnMatDescr_t& C,
                                         DATA_TYPE * d_distances);
+
+__global__ void scale_diag(DATA_TYPE * d_M, const uint32_t n, const DATA_TYPE alpha);
+
+template <typename Kernel>
+void init_kernel_mtx(cublasHandle_t& cublasHandle,
+                     cudaDeviceProp * deviceProps,
+                     const uint32_t n,
+                     const uint32_t k,
+                     const uint32_t d,
+                     const DATA_TYPE * d_points,
+                     DATA_TYPE * d_B)
+{
+    float b_beta = 0.0;
+
+    if (n<=1000) {
+        float b_alpha = -2.0;
+        CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle, 
+                                        CUBLAS_OP_T,
+                                        CUBLAS_OP_N,
+                                        n, n, d,
+                                        &b_alpha,
+                                        d_points, d,
+                                        d_points, d,
+                                        &b_beta,
+                                        d_B, n));
+
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+        Kernel::function(n, d, d_B);
+
+    } else {
+        float b_alpha = 1.0;
+
+        DATA_TYPE * d_B_tmp;
+        CHECK_CUDA_ERROR(cudaMalloc(&d_B_tmp, sizeof(DATA_TYPE)*n*n)); //TODO: Just allocate space for triangular region
+        CHECK_CUDA_ERROR(cudaMemset(d_B_tmp, 0, sizeof(DATA_TYPE)*n*n)); //Just in case
+
+        CHECK_CUBLAS_ERROR(cublasSsyrk(cublasHandle,
+                                       CUBLAS_FILL_MODE_LOWER,
+                                       CUBLAS_OP_T,
+                                       n, d, 
+                                       &b_alpha,
+                                       d_points, d,
+                                       &b_beta,
+                                       d_B_tmp, n));
+
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+        Kernel::function(n, d, d_B);
+
+        b_alpha = -2.0;
+        b_beta = -2.0;
+        CHECK_CUBLAS_ERROR(cublasSgeam(cublasHandle,
+                                       CUBLAS_OP_T,
+                                       CUBLAS_OP_N,
+                                       n, n,
+                                       &b_alpha,
+                                       d_B_tmp, n,
+                                       &b_beta,
+                                       d_B_tmp, n,
+                                       d_B, n));
+        const uint32_t scale_diag_b_block_dim = std::min((uint32_t)deviceProps->maxThreadsPerBlock, n);
+        const uint32_t scale_diag_b_grid_dim = static_cast<float>(n)/static_cast<float>(scale_diag_b_block_dim);
+
+        scale_diag<<<scale_diag_b_grid_dim, scale_diag_b_block_dim>>>(d_B, n, 0.5);
+
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        CHECK_CUDA_ERROR(cudaFree(d_B_tmp));
+    }
+
+    
+}
 
 
 __global__ void check_convergence( const DATA_TYPE * d_centroids,

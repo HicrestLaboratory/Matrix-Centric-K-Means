@@ -135,7 +135,7 @@ const DistanceMethod _distMethod)
 
         /* Init B */
         CHECK_CUDA_ERROR(cudaMalloc(&d_B, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
-        init_kernel_mtx<LinearKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
+        init_kernel_mtx<kernels::LinearKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
 
     } else {
         d_B = nullptr;
