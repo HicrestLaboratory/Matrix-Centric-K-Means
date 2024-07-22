@@ -852,7 +852,40 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
 
 
 
+/* Compute kernels */
+__global__ void sigmoid(const uint32_t n,
+                               DATA_TYPE * d_B,
+                               const DATA_TYPE gamma,
+                               const DATA_TYPE coef)
+{
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < n*n) {
+        d_B[tid] = tanhf(d_B[tid]*gamma + coef);
+    }
+}
 
+
+__global__ void polynomial(const uint32_t n,
+                                   DATA_TYPE * d_B,
+                                   const DATA_TYPE gamma,
+                                   const DATA_TYPE coef,
+                                   const uint32_t deg)
+{
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < n*n) {
+        d_B[tid] = -2.0*pow(d_B[tid]*gamma + coef, deg);
+    }
+}
+
+
+__global__ void linear(const uint32_t n,
+                       DATA_TYPE * d_B)
+{
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < n*n) {
+        d_B[tid] *= -2.0;
+    }
+}
 
 
 

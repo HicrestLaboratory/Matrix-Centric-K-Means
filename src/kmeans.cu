@@ -59,17 +59,21 @@ using namespace std;
 
 const DATA_TYPE INFNTY = numeric_limits<DATA_TYPE>::infinity();
 
-Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, const float _tol, const int* seed, Point<DATA_TYPE>** _points, cudaDeviceProp* _deviceProps,
-const InitMethod _initMethod,
-const DistanceMethod _distMethod)
-		: n(_n), d(_d), k(_k), tol(_tol),
-		POINTS_BYTES(_n * _d * sizeof(DATA_TYPE)),
-		CENTROIDS_BYTES(_k * _d * sizeof(DATA_TYPE)),
-        h_points_clusters(_n),
-		points(_points),
-		deviceProps(_deviceProps),
-        initMethod(_initMethod),
-        dist_method(_distMethod)
+
+Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k, 
+                const float _tol, const int* seed, 
+                Point<DATA_TYPE>** _points, cudaDeviceProp* _deviceProps,
+                const InitMethod _initMethod,
+                const DistanceMethod _distMethod,
+                const Kernel _kernel)
+                : n(_n), d(_d), k(_k), tol(_tol),
+                POINTS_BYTES(_n * _d * sizeof(DATA_TYPE)),
+                CENTROIDS_BYTES(_k * _d * sizeof(DATA_TYPE)),
+                h_points_clusters(_n),
+                points(_points),
+                deviceProps(_deviceProps),
+                initMethod(_initMethod),
+                dist_method(_distMethod)
 {
 
     CHECK_CUBLAS_ERROR(cublasCreate(&cublasHandle));
@@ -131,15 +135,44 @@ const DistanceMethod _distMethod)
     cudaEventRecord(e_perf_bmult_start);
 #endif
 
+
     if (dist_method==Kmeans::DistanceMethod::spmm) {
 
         /* Init B */
         CHECK_CUDA_ERROR(cudaMalloc(&d_B, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
-        init_kernel_mtx<kernels::LinearKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
+
+        switch(_kernel)
+        {
+            case Kernel::linear:
+                init_kernel_mtx<LinearKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
+                break;
+
+            case Kernel::polynomial:
+                init_kernel_mtx<PolynomialKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
+                break;
+        }
 
     } else {
         d_B = nullptr;
     }
+
+    /*
+    std::ofstream kernel_out;
+    kernel_out.open("kernel.out");
+    DATA_TYPE * h_B = new DATA_TYPE[n*n];
+    cudaMemcpy(h_B, d_B, sizeof(DATA_TYPE)*n*n, cudaMemcpyDeviceToHost);
+    for (int i=0; i<n; i++) {
+        for (int j=0; j<n; j++) {
+            kernel_out<<h_B[j + i*n]/-2.0<<",";
+        }
+        kernel_out<<std::endl;
+    }
+    kernel_out.close();
+    delete[] h_B;
+    */
+
+
+
 
 #if PERFORMANCES_BMULT
 
@@ -296,7 +329,7 @@ Kmeans::~Kmeans ()
 
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(D_descr));
     CHECK_CUSPARSE_ERROR(cusparseDestroySpMat(V_descr));
-    CHECK_CUSPARSE_ERROR(cusparseDestroySpMat(F_descr));
+    //CHECK_CUSPARSE_ERROR(cusparseDestroySpMat(F_descr));
 
     CHECK_CUSPARSE_ERROR(cusparseDestroy(cusparseHandle));
     CHECK_CUBLAS_ERROR(cublasDestroy(cublasHandle));
@@ -307,9 +340,45 @@ Kmeans::~Kmeans ()
 
 
 
-void Kmeans::init_centroids_rand () {
-    std::uniform_int_distribution<> distr(0, n-1);
-    init_centroid_selector(k, n, d, distr, d_F_vals, d_F_colinds, d_F_row_offsets, &F_descr);
+/* Randomly give each point a cluster label */
+void Kmeans::init_centroids_rand() 
+{
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> distr(0, k-1);
+    //init_centroid_selector(k, n, d, distr, d_F_vals, d_F_colinds, d_F_row_offsets, &F_descr);
+
+    std::vector<uint32_t> h_clusters(n);
+    std::generate(h_clusters.begin(), h_clusters.end(), [&](){return distr(gen);});
+
+    std::vector<uint32_t> h_clusters_len(k);
+    std::for_each(h_clusters.begin(), h_clusters.end(), [&](auto const& cluster)mutable {h_clusters_len[cluster] += 1;});
+
+
+    uint32_t* d_clusters;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_clusters, n * sizeof(uint32_t)));
+
+    uint32_t* d_clusters_len;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_clusters_len, k * sizeof(uint32_t)));
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_clusters, h_clusters.data(), sizeof(uint32_t)*n, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_clusters_len, h_clusters_len.data(), sizeof(uint32_t)*k, cudaMemcpyHostToDevice));
+
+    const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
+    const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
+
+    compute_v_sparse<<<v_mat_grid_dim, v_mat_block_dim>>>(d_V_vals,
+                                                          d_V_rowinds,
+                                                          d_V_col_offsets,
+                                                          d_clusters, d_clusters_len,
+                                                          n);
+
+
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    CHECK_CUDA_ERROR(cudaFree(d_clusters));
+    CHECK_CUDA_ERROR(cudaFree(d_clusters_len));
+
 }
 
 
@@ -754,23 +823,13 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
             case Kmeans::DistanceMethod::spmm:
             {
-                if (iter==1) {
-                    compute_distances_spmm_no_centroids(cusparseHandle,
-                                                        d, n, k_pruned,
-                                                        d_points_row_norms,
-                                                        d_centroids_row_norms,
-                                                        B_descr, F_descr,
-                                                        D_descr, C_descr,
-                                                        d_distances);
-                } else {
-                    compute_distances_spmm_no_centroids(cusparseHandle,
-                                                        d, n, k_pruned,
-                                                        d_points_row_norms,
-                                                        d_centroids_row_norms,
-                                                        B_descr, V_descr,
-                                                        D_descr, C_descr,
-                                                        d_distances);
-                }
+                compute_distances_spmm_no_centroids(cusparseHandle,
+                                                    d, n, k_pruned,
+                                                    d_points_row_norms,
+                                                    d_centroids_row_norms,
+                                                    B_descr, V_descr,
+                                                    D_descr, C_descr,
+                                                    d_distances);
                 break;
             }
         }

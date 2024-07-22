@@ -3,7 +3,6 @@
 
 #include "include/common.h"
 #include "include/point.hpp"
-#include "kernels/kernel_functions.cuh"
 
 #include <random>
 
@@ -58,6 +57,12 @@ class Kmeans {
         spmm
     };
 
+    enum class Kernel 
+    {
+        linear,
+        polynomial 
+    };
+
 	template <typename IndexT, typename DataT>
 	struct KeyValueIndexScaleOp {
      
@@ -80,9 +85,11 @@ class Kmeans {
 	  }
 	};
 
+
     Kmeans(const size_t n, const uint32_t d, const uint32_t k, const float tol, const int *seed, Point<DATA_TYPE>** points, cudaDeviceProp* deviceProps,
             InitMethod _initMethod=InitMethod::random,
-            DistanceMethod _distMethod=DistanceMethod::gemm);
+            DistanceMethod _distMethod=DistanceMethod::gemm,
+            Kernel _kernel=Kernel::linear);
     ~Kmeans();
 
     /**

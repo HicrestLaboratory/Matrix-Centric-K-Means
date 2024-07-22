@@ -5,12 +5,12 @@
 #include <cublas_v2.h>
 #include <cusparse.h>
 #include <random>
+#include <iostream>
 #include <unordered_set>
 
 #include "../include/common.h"
 #include "../cuda_utils.cuh"
 
-#include "kernel_functions.cuh"
 
 
 #define DISTANCES_SHFL_MASK 0xFFFFFFFF
@@ -22,6 +22,107 @@ struct Pair {
   uint32_t i;
 };
 
+
+
+__global__ void sigmoid(const uint32_t n,
+                               DATA_TYPE * d_B,
+                               const DATA_TYPE gamma,
+                               const DATA_TYPE coef);
+
+__global__ void polynomial(const uint32_t n,
+                                   DATA_TYPE * d_B,
+                                   const DATA_TYPE gamma,
+                                   const DATA_TYPE coef,
+                                   const uint32_t deg);
+
+__global__ void linear(const uint32_t n,
+                       DATA_TYPE * d_B);
+
+
+/* Kernel structs */
+
+struct LinearKernel 
+{
+
+    static std::pair<uint32_t, uint32_t> get_grid_params(const uint32_t n) 
+    {
+        const uint32_t max_tpb = 1024;
+        const uint32_t tpb = std::min(n*n, max_tpb);
+        const uint32_t blocks = std::ceil( static_cast<float>(n*n) / static_cast<float>(tpb) );
+        return {blocks, tpb};
+    }
+
+    static void function(const uint32_t n,
+                         const uint32_t d,
+                         DATA_TYPE * d_B)
+    {
+        auto params = get_grid_params(n);
+
+        linear<<<params.first, params.second>>>(n, d_B);
+    }
+};
+
+
+struct SigmoidKernel 
+{
+
+    static std::pair<uint32_t, uint32_t> get_grid_params(const uint32_t n) 
+    {
+        const uint32_t max_tpb = 1024;
+        const uint32_t tpb = std::min(n*n, max_tpb);
+        const uint32_t blocks = std::ceil( static_cast<float>(n*n) / static_cast<float>(tpb) );
+        return {blocks, tpb};
+    }
+
+    static void function(const uint32_t n,
+                         const uint32_t d,
+                         DATA_TYPE * d_B)
+    {
+
+
+        const DATA_TYPE gamma = 1.0 / static_cast<float>(d);
+        const DATA_TYPE coef = 1;
+
+        auto params = get_grid_params(n);
+
+        sigmoid<<<params.first, params.second>>>(n, d_B, gamma, coef);
+
+    }
+
+};
+
+
+struct PolynomialKernel 
+{
+    static std::pair<uint32_t, uint32_t> get_grid_params(const uint32_t n) 
+    {
+        const uint32_t max_tpb = 1024;
+        const uint32_t tpb = std::min(n*n, max_tpb);
+        const uint32_t blocks = std::ceil( static_cast<float>(n*n) / static_cast<float>(tpb) );
+        return {blocks, tpb};
+    }
+
+    static void function(const uint32_t n,
+                         const uint32_t d,
+                         DATA_TYPE * d_B)
+    {
+
+
+        const DATA_TYPE gamma = 1.0 / static_cast<float>(d);
+        const DATA_TYPE coef = 1;
+        const uint32_t deg = 3;
+
+
+        auto params = get_grid_params(n);
+        std::cout<<params.first<<","<<params.second<<std::endl;
+
+        polynomial<<<params.first, params.second>>>(n, d_B, gamma, coef, deg);
+
+        cudaDeviceSynchronize();
+
+    }
+
+};
 
 /*////// SCHEDULE FUNCTIONS ///////*/
 
@@ -346,9 +447,9 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
                      DATA_TYPE * d_B)
 {
     float b_beta = 0.0;
+    float b_alpha = 1.0;
 
-    if (n<=1000) {
-        float b_alpha = -2.0;
+    if (n<=1000 && false) {
         CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle, 
                                         CUBLAS_OP_T,
                                         CUBLAS_OP_N,
@@ -362,9 +463,9 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
         Kernel::function(n, d, d_B);
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
     } else {
-        float b_alpha = 1.0;
 
         DATA_TYPE * d_B_tmp;
         CHECK_CUDA_ERROR(cudaMalloc(&d_B_tmp, sizeof(DATA_TYPE)*n*n)); //TODO: Just allocate space for triangular region
@@ -381,10 +482,9 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
 
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-        Kernel::function(n, d, d_B);
 
-        b_alpha = -2.0;
-        b_beta = -2.0;
+        b_alpha = 1.0;
+        b_beta = 1.0;
         CHECK_CUBLAS_ERROR(cublasSgeam(cublasHandle,
                                        CUBLAS_OP_T,
                                        CUBLAS_OP_N,
@@ -394,12 +494,17 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
                                        &b_beta,
                                        d_B_tmp, n,
                                        d_B, n));
+
+
         const uint32_t scale_diag_b_block_dim = std::min((uint32_t)deviceProps->maxThreadsPerBlock, n);
-        const uint32_t scale_diag_b_grid_dim = static_cast<float>(n)/static_cast<float>(scale_diag_b_block_dim);
+        const uint32_t scale_diag_b_grid_dim = std::ceil(static_cast<float>(n)/static_cast<float>(scale_diag_b_block_dim));
 
         scale_diag<<<scale_diag_b_grid_dim, scale_diag_b_block_dim>>>(d_B, n, 0.5);
-
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+        //TODO: Make triangular version of these
+        Kernel::function(n, d, d_B);
+
         CHECK_CUDA_ERROR(cudaFree(d_B_tmp));
     }
 

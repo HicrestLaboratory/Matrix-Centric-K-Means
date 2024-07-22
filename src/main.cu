@@ -20,8 +20,7 @@ int main(int argc, char **argv) {
   int     *seed = NULL;
   InputParser<float> *input = NULL;
   bool check_converged;
-  string dist_method_str;
-  string init_method_str;
+  string dist_method_str, init_method_str, kernel_str;
 
   parse_input_args(argc, argv, 
                     &d, &n, &k, 
@@ -29,7 +28,8 @@ int main(int argc, char **argv) {
                     &tol, &runs, &seed, &input,
                     &check_converged,
                     dist_method_str,
-                    init_method_str);
+                    init_method_str,
+                    kernel_str);
 
   #if DEBUG_INPUT_DATA
     cout << "Points" << endl << *input << endl;
@@ -79,11 +79,24 @@ int main(int argc, char **argv) {
       exit(1);
   }
 
+
+  Kmeans::Kernel kernel;
+  if (kernel_str.compare("linear")==0) {
+      kernel = Kmeans::Kernel::linear;
+  } else if (kernel_str.compare("polynomial")==0) {
+      kernel= Kmeans::Kernel::polynomial;
+  } else {
+      printf("Invalid kernel: %s\n", kernel_str.c_str());
+      exit(1);
+  }
+
+
   for (uint32_t i = 0; i < runs; i++) {
     const auto init_start = chrono::high_resolution_clock::now();
     Kmeans kmeans(n, d, k, tol, seed, input->get_dataset(), &deviceProp,
                     init_method,
-                    dist_method);
+                    dist_method,
+                    kernel);
     const auto init_end = chrono::high_resolution_clock::now();
 
     if (i>0)

@@ -25,8 +25,9 @@
 #define ARG_CHECK       "check"
 #define ARG_PWDIST      "pwdist"
 #define ARG_INIT        "init"
+#define ARG_FUNCTION    "kernel"
 
-const char* ARG_STR[]   = {"dimensions", "n-samples", "clusters", "maxiter", "out-file", "in-file", "tolerance", "check", "pwdist", "init"};
+const char* ARG_STR[]   = {"dimensions", "n-samples", "clusters", "maxiter", "out-file", "in-file", "tolerance", "check", "pwdist", "init", "kernel"};
 const float DEF_EPSILON = numeric_limits<float>::epsilon();
 const int   DEF_RUNS    = 1;
 
@@ -93,7 +94,8 @@ void parse_input_args(const int argc, const char *const *argv,
                       size_t *maxiter, string &out_file, float *tol, 
                       uint32_t *runs, int **seed, InputParser<DATA_TYPE> **input, 
                       bool * check_converged, string& dist_method,
-                      string& init_method) {
+                      string& init_method,
+                      string& kernel) {
   cxxopts::Options options("gpukmeans", "gpukmeans is an implementation of the K-means algorithm that uses a GPU");
 
   int _false = 0;
@@ -111,7 +113,8 @@ void parse_input_args(const int argc, const char *const *argv,
     ("t," ARG_TOL,      "Tolerance to declare convergence", cxxopts::value<float>()->default_value(to_string(DEF_EPSILON)))
     ("c," ARG_CHECK, "Whether or not to check convergence", cxxopts::value<int>()->default_value(to_string(_false)))
     ("p," ARG_PWDIST, "Method to use for pairwise distances", cxxopts::value<string>())
-    ("b," ARG_INIT, "Method to use to initialize centroids", cxxopts::value<string>());
+    ("b," ARG_INIT, "Method to use to initialize centroids", cxxopts::value<string>())
+    ("f," ARG_FUNCTION, "kernel function", cxxopts::value<string>());
 
   cxxopts::ParseResult args = options.parse(argc, argv);
 
@@ -132,6 +135,7 @@ void parse_input_args(const int argc, const char *const *argv,
   *check_converged = getArg_u(args, ARG_CHECK, &(_false));
   dist_method = getArg_s(args, ARG_PWDIST, NULL);
   init_method = getArg_s(args, ARG_INIT, NULL);
+  kernel = getArg_s(args, ARG_FUNCTION, NULL);
 
   *seed = NULL;
   if (args[ARG_SEED].count() > 0) {
