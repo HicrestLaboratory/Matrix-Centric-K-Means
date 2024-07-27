@@ -31,5 +31,6 @@ void printMatrixRowMaj (DATA_TYPE* M, uint32_t rows, uint32_t cols);
 void printArray (DATA_TYPE* A, uint32_t len);
 bool is_close(DATA_TYPE val, DATA_TYPE actual, DATA_TYPE atol=1e-4);
 
+
 #endif
 

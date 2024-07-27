@@ -85,6 +85,10 @@ int main(int argc, char **argv) {
       kernel = Kmeans::Kernel::linear;
   } else if (kernel_str.compare("polynomial")==0) {
       kernel= Kmeans::Kernel::polynomial;
+  } else if (kernel_str.compare("sigmoid")==0) {
+      kernel= Kmeans::Kernel::sigmoid;
+  } else if (kernel_str.compare("rbf")==0) {
+      kernel= Kmeans::Kernel::rbf;
   } else {
       printf("Invalid kernel: %s\n", kernel_str.c_str());
       exit(1);

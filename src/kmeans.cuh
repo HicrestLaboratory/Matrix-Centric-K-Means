@@ -60,7 +60,9 @@ class Kmeans {
     enum class Kernel 
     {
         linear,
-        polynomial 
+        polynomial,
+        sigmoid,
+        rbf
     };
 
 	template <typename IndexT, typename DataT>
@@ -120,7 +122,8 @@ class Kmeans {
     std::vector<uint32_t>  h_points_clusters;
     DATA_TYPE* d_points;
     DATA_TYPE* d_centroids;
-    DATA_TYPE* d_CC_t;
+    DATA_TYPE* d_centroids_row_norms;
+    DATA_TYPE* d_z_vals;
 
     DATA_TYPE* d_B;
 
@@ -136,6 +139,8 @@ class Kmeans {
     cusparseDnMatDescr_t B_descr;
     cusparseDnMatDescr_t D_descr;
     cusparseDnMatDescr_t C_descr;
+    cusparseDnVecDescr_t c_tilde_descr;
+    cusparseDnVecDescr_t z_descr;
     cusparseSpMatDescr_t V_descr;
     cusparseSpMatDescr_t F_descr;
 

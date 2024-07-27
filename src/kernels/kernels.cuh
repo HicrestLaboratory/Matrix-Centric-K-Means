@@ -34,6 +34,16 @@ __global__ void polynomial(const uint32_t n,
                                    const DATA_TYPE gamma,
                                    const DATA_TYPE coef,
                                    const uint32_t deg);
+__global__ void polynomial_inv(const uint32_t n,
+                                   DATA_TYPE * d_B,
+                                   const DATA_TYPE gamma,
+                                   const DATA_TYPE coef,
+                                   const uint32_t deg);
+
+__global__ void rbf(const uint32_t n,
+                    DATA_TYPE * d_B,
+                    const DATA_TYPE gamma);
+
 
 __global__ void linear(const uint32_t n,
                        DATA_TYPE * d_B);
@@ -80,7 +90,7 @@ struct SigmoidKernel
     {
 
 
-        const DATA_TYPE gamma = 1.0 / static_cast<float>(d);
+        const DATA_TYPE gamma = 0.5;// / static_cast<float>(d);
         const DATA_TYPE coef = 1;
 
         auto params = get_grid_params(n);
@@ -108,15 +118,45 @@ struct PolynomialKernel
     {
 
 
-        const DATA_TYPE gamma = 1.0 / static_cast<float>(d);
-        const DATA_TYPE coef = 1;
-        const uint32_t deg = 3;
+        const DATA_TYPE gamma = 1.0; /// static_cast<float>(d);
+        const DATA_TYPE coef = 1.0;
+        const uint32_t deg = 2;
 
 
         auto params = get_grid_params(n);
         std::cout<<params.first<<","<<params.second<<std::endl;
 
         polynomial<<<params.first, params.second>>>(n, d_B, gamma, coef, deg);
+
+        cudaDeviceSynchronize();
+
+    }
+
+};
+
+
+struct RBFKernel 
+{
+    static std::pair<uint32_t, uint32_t> get_grid_params(const uint32_t n) 
+    {
+        const uint32_t max_tpb = 1024;
+        const uint32_t tpb = std::min(n*n, max_tpb);
+        const uint32_t blocks = std::ceil( static_cast<float>(n*n) / static_cast<float>(tpb) );
+        return {blocks, tpb};
+    }
+
+    static void function(const uint32_t n,
+                         const uint32_t d,
+                         DATA_TYPE * d_B)
+    {
+
+
+        const DATA_TYPE gamma = 1/(DATA_TYPE)d; /// static_cast<float>(d);
+
+        auto params = get_grid_params(n);
+        std::cout<<params.first<<","<<params.second<<std::endl;
+
+        rbf<<<params.first, params.second>>>(n, d_B, gamma);
 
         cudaDeviceSynchronize();
 
@@ -275,6 +315,12 @@ __global__ void compute_v_sparse(DATA_TYPE * d_vals,
 }
 
 
+__global__ void init_z(const uint32_t n, const uint32_t k,
+                       const DATA_TYPE * d_distances,
+                       const int32_t * V_rowinds,
+                       DATA_TYPE * d_z_vals);
+
+
 // Blocked ELLPACK
 // Each thread block should be responsible for points that live in a 2D partition of the 
 // logical view of the matrix
@@ -428,11 +474,11 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
                                         const uint32_t n,
                                         const uint32_t k,
                                         const DATA_TYPE * d_points_row_norms,
-                                        DATA_TYPE * d_centroids_row_norms,
                                         const cusparseDnMatDescr_t& B,
                                         const cusparseSpMatDescr_t& V,
                                         cusparseDnMatDescr_t& D,
-                                        cusparseDnMatDescr_t& C,
+                                        cusparseDnVecDescr_t& c_tilde,
+                                        cusparseDnVecDescr_t& z,
                                         DATA_TYPE * d_distances);
 
 __global__ void scale_diag(DATA_TYPE * d_M, const uint32_t n, const DATA_TYPE alpha);

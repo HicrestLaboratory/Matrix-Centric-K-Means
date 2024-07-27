@@ -727,28 +727,39 @@ void compute_distances_spmm(const cusparseHandle_t& handle,
 
 }
 
+__global__ void init_z(const uint32_t n, const uint32_t k,
+                       const DATA_TYPE * d_distances,
+                       const int32_t * V_rowinds,
+                       DATA_TYPE * d_z_vals)
+{
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < n) {
+        const uint32_t rid = V_rowinds[tid];
+        d_z_vals[tid] = d_distances[rid + (k*tid)];
+    }
+}
 
 void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
                                         const uint32_t d, 
                                         const uint32_t n,
                                         const uint32_t k,
                                         const DATA_TYPE * d_points_row_norms,
-                                        DATA_TYPE * d_centroids_row_norms,
                                         const cusparseDnMatDescr_t& B,
                                         const cusparseSpMatDescr_t& V,
                                         cusparseDnMatDescr_t& D,
-                                        cusparseDnMatDescr_t& C,
+                                        cusparseDnVecDescr_t& c_tilde,
+                                        cusparseDnVecDescr_t& z,
                                         DATA_TYPE * d_distances)
 {
 
     /* d_distances = BV^T.
      * Since cuSPARSE doesn't support dense-times-sparse matmul,
      * we have to trick the SpMM routine into computing B*V^T.
-     * We compute D=V*B, but D is stored as a k*n matrix in column major order,
+     * We compute D^T=V*B, but D^T is stored as a k*n matrix in column major order,
      * so if we access it as if it were stored in row major order, it's like we're
-     * working with D^T.
+     * working with D.
      */
-    const DATA_TYPE alpha = 1.0;
+    DATA_TYPE alpha = 1.0;
     const DATA_TYPE beta = 0.0;
     
     size_t buff_size = 0;
@@ -786,64 +797,64 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
     CHECK_CUDA_ERROR(cudaFree(d_buff));
 
 
-    /* Right now, d_distances=B*V^T.
-     * We want to first compute \tilde{C} = diag(V*d_distances).
-     * Then, we can add \tilde{P} and \tilde{C} to d_distances.
-     * d_distances is stored as d_distances^T in D, so 
-     * CC^T = d_distances^T*V^T = V*d_distances, so D is tranposed in this spmm call
-     *
-     * Note that this does perform unnecessary computation, since we only need the diagonal
-     * of CC^T. However, even given this redundant computation, this should still be more efficient
-     * for datasets with high dimensionality.
-     * A sampled SpMM routine akin to SDDMM would eliminate redundant computation, but there is currently
-     * no such routine in cuSPARSE.
-     */
+    /* Setup z */
+    // cuSPARSE does not let you fetch individual sparse matrix fields, you have to do all of them
+    int32_t * V_rowinds;
+    int32_t * V_colptrs;
+    DATA_TYPE * V_vals;
+    int64_t rows, cols, nnz;
+    cusparseIndexType_t col_type, row_type;
+    cusparseIndexBase_t base;
+    cudaDataType vals_type;
 
-    CHECK_CUSPARSE_ERROR(cusparseSpMM_bufferSize(handle,
-                                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                                  CUSPARSE_OPERATION_TRANSPOSE,
-                                                  &alpha,
-                                                  V,
-                                                  D,
-                                                  &beta,
-                                                  C,
-                                                  CUDA_R_32F,
-                                                  CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
-                                                  &buff_size));
+    CHECK_CUSPARSE_ERROR(cusparseCscGet(V,
+                                        &rows, &cols, &nnz,
+                                        (void**)&V_colptrs,
+                                        (void**)&V_rowinds,
+                                        (void**)&V_vals,
+                                        &col_type, &row_type,
+                                        &base,
+                                        &vals_type));
+    DATA_TYPE * d_z_vals;
+    CHECK_CUSPARSE_ERROR(cusparseDnVecGetValues(z, (void**)&d_z_vals));
+
+    const uint32_t block_dim_z = min(n, 1024); //TODO Replace with device props max threads 
+    const uint32_t grid_dim_z = ceil((float)n / (float)block_dim_z);
+    init_z<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, V_rowinds, d_z_vals);
+
+    /* SpMV to compute c_tilde */
+    DATA_TYPE * d_c_norms;
+    CHECK_CUSPARSE_ERROR(cusparseDnVecGetValues(c_tilde, (void**)&d_c_norms));
+
+    alpha = -0.5;
+    CHECK_CUSPARSE_ERROR(cusparseSpMV_bufferSize(handle,
+                                                 CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                                 &alpha, V, z, 
+                                                 &beta, c_tilde,
+                                                 CUDA_R_32F,
+                                                 CUSPARSE_SPMV_ALG_DEFAULT,
+                                                 &buff_size));
 
     CHECK_CUDA_ERROR(cudaMalloc(&d_buff, buff_size));
+    CHECK_CUSPARSE_ERROR(cusparseSpMV(handle,
+                                     CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                     &alpha, V, z, 
+                                     &beta, c_tilde,
+                                     CUDA_R_32F,
+                                     CUSPARSE_SPMV_ALG_DEFAULT,
+                                     d_buff));
 
-    CHECK_CUSPARSE_ERROR(cusparseSpMM(handle,
-                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                      CUSPARSE_OPERATION_TRANSPOSE,
-                                      &alpha,
-                                      V,
-                                      D,
-                                      &beta,
-                                      C,
-                                      CUDA_R_32F,
-                                      CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
-                                      d_buff));
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     CHECK_CUDA_ERROR(cudaFree(d_buff));
-
-    const uint32_t block_dim_diag = min(k, 1024); //TODO Replace with device props max threads 
-    const uint32_t grid_dim_diag = ceil((float)k / (float)block_dim_diag);
-
-    /* Extract diagonal from CC^T */
-    DATA_TYPE * d_C_vals;
-    CHECK_CUSPARSE_ERROR(cusparseDnMatGetValues(C, (void**)(&d_C_vals)));
-    copy_diag_scal<<<grid_dim_diag, block_dim_diag>>>(d_C_vals, d_centroids_row_norms, k, k, -2.0);
 
 
     /* Now we can add norms to d_distances */
     const uint32_t block_dim = min(n*k, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
 
-    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
     add_norm_mtx_row<<<grid_dim, block_dim>>>(n, k, d_points_row_norms, d_distances);
-    add_norm_mtx_col<<<grid_dim, block_dim>>>(n, k, d_centroids_row_norms, d_distances);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    add_norm_mtx_col<<<grid_dim, block_dim>>>(n, k, d_c_norms, d_distances);
 
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
@@ -860,7 +871,7 @@ __global__ void sigmoid(const uint32_t n,
 {
     const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
     if (tid < n*n) {
-        d_B[tid] = tanhf(d_B[tid]*gamma + coef);
+        d_B[tid] = -2.0*tanhf(d_B[tid]*gamma + coef);
     }
 }
 
@@ -877,6 +888,31 @@ __global__ void polynomial(const uint32_t n,
     }
 }
 
+__global__ void polynomial_inv(const uint32_t n,
+                                   DATA_TYPE * d_B,
+                                   const DATA_TYPE gamma,
+                                   const DATA_TYPE coef,
+                                   const uint32_t deg)
+{
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < n*n) {
+        d_B[tid] = (pow(d_B[tid], 1/(DATA_TYPE)deg) - coef)/gamma;
+    }
+}
+
+__global__ void rbf(const uint32_t n,
+                    DATA_TYPE * d_B,
+                    const DATA_TYPE gamma)
+{
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+    const uint32_t i = tid / n;
+    const uint32_t j = tid % n;
+    if (tid < n*n) {
+        d_B[tid] = -2.0*expf(-gamma*(-2.0*d_B[tid] + d_B[i + i*n] + d_B[j + j*n]));
+    }
+}
+
+
 
 __global__ void linear(const uint32_t n,
                        DATA_TYPE * d_B)
@@ -886,6 +922,7 @@ __global__ void linear(const uint32_t n,
         d_B[tid] *= -2.0;
     }
 }
+
 
 
 
