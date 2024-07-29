@@ -358,7 +358,7 @@ def run_matlab_kmeans(args):
 
         print(f"Running matlab with n={n} d={d} k={k}")
 
-        cmd = f"matlab -batch 'driver(\"{args.infile}\", {n}, {d}, {k}, {args.ntrials})'"
+        cmd = f"matlab -batch \"driver(\'{args.infile}\', {n}, {d}, {k}, {args.ntrials})\""
 
         print(f"Executing {cmd}")
 

@@ -2,8 +2,14 @@
 
 function driver(file_path, n, d, k, n_trials)
 
+    addpath("./libsvm-3.33/matlab/")
+
     disp("Reading libsvm file...");
-    X = read_libsvm(file_path, n, d);
+    %X = read_libsvm(file_path, n, d);
+    disp(file_path)
+    disp(pwd)
+    [labels, features] = libsvmread(file_path);
+
     disp("Done!");
 
     fprintf("n:%d d:%d k:%d\n", n, d, k);
@@ -15,7 +21,7 @@ function driver(file_path, n, d, k, n_trials)
     for i=1:n_trials
 
         tic;
-        score = knKmeans(X, k);
+        score = knKmeans(features, k);
         etime = toc;
 
         times(i) = etime;
