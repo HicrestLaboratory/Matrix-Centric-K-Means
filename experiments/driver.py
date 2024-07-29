@@ -12,6 +12,8 @@ import numpy as np
 import statistics as stats
 import scipy.stats as st
 
+from kernel_kmeans import KernelKMeans
+
 
 
 from dataclasses import dataclass
@@ -152,6 +154,87 @@ class KmeansTrial(Trial):
                 }
 
 
+class TslearnTrial(Trial):
+
+    features = ["runtime",
+                "d","n","k",
+                "score",
+                "iterations"]
+
+    def __init__(self):
+        super().__init__()
+
+
+class DlibTrial(Trial):
+
+    features = ["runtime", 
+                "d", "n", "k",
+                "score",
+                "iterations"]
+
+    def __init__(self):
+        super().__init__()
+
+
+    def parse_output(self, result, n_trials, maxiters):
+
+        output = result.stdout
+        print(output)
+
+        pattern = r"n:(\d+) d:(\d+) k:(\d+)"
+        matches = re.findall(pattern, output)[0]
+        n,d,k = int(matches[0]), int(matches[1]), int(matches[2]) 
+
+        get_time_str = lambda s: re.escape(s) + r": (\d+\.\d+)s"
+
+        pattern = get_time_str("kmeans-time")
+        match = re.search(pattern, output)
+        kmeans_time = float(match.group(1))
+
+        pattern = r"kmeans-score: (\d+\.\d+)"
+        match = re.search(pattern, output)
+        score = float(match.group(1))
+
+        return {"runtime":kmeans_time,
+                "d":d, "k":k, "n":n,
+                "score":score,
+                }
+
+class MatlabTrial(Trial):
+
+    features = ["runtime", 
+                "d", "n", "k",
+                "score",
+                "iterations"]
+
+    def __init__(self):
+        super().__init__()
+
+    def parse_output(self, result, n_trials, maxiters):
+
+        output = result.stdout
+        print(output)
+
+        pattern = r"n:(\d+) d:(\d+) k:(\d+)"
+        matches = re.findall(pattern, output)[0]
+        n,d,k = int(matches[0]), int(matches[1]), int(matches[2]) 
+
+        get_time_str = lambda s: re.escape(s) + r": (\d+\.\d+)"
+
+        pattern = get_time_str("Time")
+        match = re.search(pattern, output)
+        kmeans_time = float(match.group(1))
+
+        pattern = r"Score: (\d+\.\d+)"
+        match = re.search(pattern, output)
+        score = float(match.group(1))
+
+        return {"runtime":kmeans_time,
+                "d":d, "k":k, "n":n,
+                "score":score,
+                }
+
+
 
 
 class RaftTrial(Trial):
@@ -227,6 +310,160 @@ class RaftTrial(Trial):
                 "iterations":iters
                 }
 
+
+def run_dlib_kmeans(args):
+
+    trial_manager = DlibTrial()
+
+    n_trials = args.ntrials
+
+    for k in args.kvals:
+
+        n,d=args.n,args.d
+
+        print(f"Running dlib with n={n} d={d} k={k}")
+
+        if args.slurm:
+            cmd = "srun -n 1 "
+        else:
+            cmd = ""
+
+        check = int(args.check)
+
+        cmd += f"./dlib-bench/driver --n {n} --d {d} --k {k} --maxiters {args.maxiters} --tol {args.tol} --ntrials {n_trials} --kernel {args.kernel} "
+        if args.infile:
+            cmd += f"--infile {args.infile} "
+
+        print(f"Executing {cmd}")
+
+        try:
+            trial_manager.run_trial(cmd, args.ntrials, args.maxiters) 
+            print(trial_manager.df)
+        except Exception as err:
+            print(err)
+
+    suffix = f"-n{args.n}-d{args.d}"
+    trial_manager.save(f"{args.fname}{suffix}")
+
+
+def run_matlab_kmeans(args):
+
+    trial_manager = MatlabTrial()
+
+    n_trials = args.ntrials
+
+    for k in args.kvals:
+
+        n,d=args.n,args.d
+
+        print(f"Running matlab with n={n} d={d} k={k}")
+
+        cmd = f"matlab -batch 'driver(\"{args.infile}\", {n}, {d}, {k}, {args.ntrials})'"
+
+        print(f"Executing {cmd}")
+
+        try:
+            trial_manager.run_trial(cmd, args.ntrials, args.maxiters) 
+            print(trial_manager.df)
+        except Exception as err:
+            print(err)
+
+    suffix = f"-n{args.n}-d{args.d}"
+    trial_manager.save(f"{args.fname}{suffix}")
+
+
+def read_svm(X, infile):
+    print("Reading svm...")
+
+    with open(infile, 'r') as file:
+        i = 0
+        for line in file:
+            pairs = line.split(" ")[1:-2]
+            for pair in pairs:
+                k,v = pair.split(":")
+                X[i, int(k)-1] = float(v)
+            i+=1
+
+    print("Done")
+
+    return X.astype(np.float32)
+
+
+
+def run_tslearn_kmeans(args):
+
+    trial_manager = TslearnTrial()
+
+    n_trials = args.ntrials
+
+    for k in args.kvals:
+
+        total_time = 0
+        score = 0
+        iters = 0
+
+        n_successful = 0
+        for i in range(n_trials):
+
+            kmeans = KernelKMeans(int(k), kernel=args.kernel, max_iter=args.maxiters,
+                                  tol=args.tol, verbose=True) 
+
+            if args.infile:
+                X = np.zeros((args.n, args.d))
+                X = read_svm(X, args.infile)
+            else:
+                X = np.random.uniform(-1e5, 1e5, (args.n, args.d))
+
+            n, d = X.shape
+
+            stime = time.time()
+            try:
+                kmeans.fit(X)
+            except:
+                print("Stupid cluster thing")
+                continue
+            etime = time.time()
+
+            total_time += (etime - stime)
+            score += kmeans.inertia_
+            print(f"Score: {kmeans.inertia_}")
+            iters += kmeans.n_iter_
+
+            n_successful += 1
+
+
+        if n_successful==0:
+            continue
+
+
+        total_time /= n_successful 
+        score /= n_successful
+        iters /= n_successful
+
+        input_dict = {"runtime": total_time,
+                      "score": score,
+                      "iterations": iters,
+                      "d": d, "n": n, "k": k}
+
+        trial_manager.add_sample(input_dict)
+
+        print(trial_manager.df)
+
+    trial_manager.save(args.fname)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def run_raft_kmeans(args):
 
     trial_manager = RaftTrial()
@@ -287,7 +524,7 @@ def run_raft_kmeans(args):
 
 def run_our_kmeans(args):
 
-    cmd = f"../build/src/bin/{args.bin}  -m {args.maxiters}  -s 1 --runs {args.ntrials}  -t {args.tol} -c {int(args.check)} -p {args.pwdist} --init {args.init} " 
+    cmd = f"../build/src/bin/{args.bin}  -m {args.maxiters}  -s 1 --runs {args.ntrials}  -t {args.tol} -c {int(args.check)} -p {args.pwdist} --init {args.init} -f {args.kernel} "
     if args.infile:
         cmd += f"-i {args.infile} "
 
@@ -621,7 +858,7 @@ if __name__=="__main__":
     parser.add_argument("--platform", type=str)
     parser.add_argument("--itervar", type=str)
     parser.add_argument("--bin", type=str)
-    parser.add_argument("--ntrials", type=int, default=10)
+    parser.add_argument("--ntrials", type=int, default=50)
     parser.add_argument("--maxiters", type=int, default=10)
     parser.add_argument("--tol", type=float, default=0.00000001)
     parser.add_argument("--infile", type=str)
@@ -642,5 +879,11 @@ if __name__=="__main__":
         run_our_kmeans(args)
     elif args.action=="raft-kmeans":
         run_raft_kmeans(args)
+    elif args.action=="dlib-kmeans":
+        run_dlib_kmeans(args)
+    elif args.action=="tslearn-kmeans":
+        run_tslearn_kmeans(args)
+    elif args.action=="matlab-kmeans":
+        run_matlab_kmeans(args)
 
 
