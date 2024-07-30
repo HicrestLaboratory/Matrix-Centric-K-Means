@@ -55,6 +55,7 @@
 #include "kernels/kernels.cuh"
 
 //#define LOG_KERNEL
+#define LOG 0
 //#define LOG_LABELS
 
 
@@ -90,7 +91,6 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
 		}
 	}
 
-    /*
     std::ofstream points_out;
     points_out.open("points-ours.out");
     for (int i=0; i<n; i++) {
@@ -100,7 +100,6 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
       points_out<<std::endl;
     }
     points_out.close();
-    */
 
 
 
@@ -373,10 +372,20 @@ void Kmeans::init_centroids_rand()
     //init_centroid_selector(k, n, d, distr, d_F_vals, d_F_colinds, d_F_row_offsets, &F_descr);
 
     std::vector<uint32_t> h_clusters(n);
-    std::generate(h_clusters.begin(), h_clusters.end(), [&](){return distr(gen);});
-
+    for (int i=0; i<n; i++) {
+        h_clusters[i] = i % k;
+    }
     std::vector<uint32_t> h_clusters_len(k);
     std::for_each(h_clusters.begin(), h_clusters.end(), [&](auto const& cluster)mutable {h_clusters_len[cluster] += 1;});
+
+#if LOG
+    std::for_each(h_clusters.begin(), h_clusters.end(), [](auto elem){std::cout<<elem<<",";});
+    std::cout<<endl;
+
+    std::cout<<"CLUSTER LENS"<<std::endl;
+    std::for_each(h_clusters_len.begin(), h_clusters_len.end(), [](auto elem){std::cout<<elem<<",";});
+    std::cout<<endl;
+#endif
 
 
     uint32_t* d_clusters;
@@ -801,20 +810,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
     while (iter++ < maxiter) {
     /* COMPUTE DISTANCES */
 
-#if LOG
-        CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_new_centroids,
-                                    d * k * sizeof(DATA_TYPE),
-                                    cudaMemcpyDeviceToHost));
-        centroids_out<<"CENTROIDS"<<std::endl;
-
-        for (int i=0; i<k; i++) {
-            for (int j=0; j<d; j++) {
-                centroids_out<<h_centroids[d*i + j]<<",";
-            }
-            centroids_out<<std::endl;
-        }
-#endif
-
 #if PERFORMANCES_KERNEL_DISTANCES
 
         cudaEvent_t e_perf_dist_start, e_perf_dist_stop;
@@ -858,6 +853,22 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         }
 
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+#if LOG
+        std::vector<DATA_TYPE> h_distances(n*k);
+        cudaMemcpy(h_distances.data(), d_distances,
+                    sizeof(DATA_TYPE)*n*k, cudaMemcpyDeviceToHost);
+
+        centroids_out<<"BEGIN DISTANCES ITER "<<iter-1<<std::endl;
+        for (int i=0; i<n; i++) {
+            for (int j=0; j<k; j++) {
+                centroids_out<<h_distances[j + i*k]<<",";
+            }
+            centroids_out<<std::endl;
+        }
+        centroids_out<<std::endl<<"END DISTANCES ITER "<<iter-1<<std::endl;
+#endif
+
 
 
         auto pw_dist_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_distances, n, k_pruned);
@@ -1179,6 +1190,8 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
                                                               d_V_col_offsets,
                                                               clusters, d_clusters_len,
                                                               n);
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
         if (dist_method==Kmeans::DistanceMethod::gemm) {
 
 
@@ -1190,7 +1203,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
                                     C_descr);
 
         }
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
 
 #if PERFORMANCES_KERNEL_CENTROIDS
 

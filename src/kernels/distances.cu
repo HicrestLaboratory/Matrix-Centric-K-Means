@@ -616,14 +616,15 @@ __global__ void compute_norm_mtx(const uint32_t m, const uint32_t n,
 
 __global__ void add_norm_mtx(const uint32_t m, const uint32_t n,
                              const DATA_TYPE * d_points_norms,
-                             const DATA_TYPE * d_centroids_norms, 
+                             DATA_TYPE * d_centroids_norms, 
                              DATA_TYPE * M)
 {
     const uint32_t tid = threadIdx.x + (blockDim.x * blockIdx.x);
     if (tid < m*n) {
         const uint32_t point_norm_idx = (tid / n);
         const uint32_t centroid_norm_idx = tid % n;
-        M[tid] += (d_points_norms[point_norm_idx] + d_centroids_norms[centroid_norm_idx]);
+        d_centroids_norms[centroid_norm_idx] = (d_centroids_norms[centroid_norm_idx] == 0) ? INFINITY : d_centroids_norms[centroid_norm_idx];
+        M[tid] += (d_centroids_norms[centroid_norm_idx]);
     }
 }
 
@@ -653,7 +654,7 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
     /* D += (P_norm + C_norm) */
     const uint32_t block_dim = min(n*k, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
-    add_norm_mtx<<<grid_dim, block_dim>>>(n, k, d_points_norms, d_centroids_norms, d_distances);
+    //add_norm_mtx<<<grid_dim, block_dim>>>(n, k, d_points_norms, d_centroids_norms, d_distances);
 
 
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
@@ -713,7 +714,7 @@ void compute_distances_spmm(const cusparseHandle_t& handle,
     const uint32_t block_dim = min(n*k, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
 
-    add_norm_mtx<<<grid_dim, block_dim>>>(n, k, d_points_row_norms, d_centroids_row_norms, d_distances);
+    //add_norm_mtx<<<grid_dim, block_dim>>>(n, k, d_points_row_norms, d_centroids_row_norms, d_distances);
 
 }
 
@@ -726,6 +727,16 @@ __global__ void init_z(const uint32_t n, const uint32_t k,
     if (tid < n) {
         const uint32_t rid = V_rowinds[tid];
         d_z_vals[tid] = d_distances[rid + (k*tid)];
+    }
+}
+
+
+__global__  void filter_c_norms(const uint32_t k,
+                                DATA_TYPE * c_norms)
+{
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < k) {
+        c_norms[tid] = (c_norms[tid] == 0) ? INFINITY : c_norms[tid];
     }
 }
 
@@ -841,10 +852,18 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
     /* Now we can add norms to d_distances */
     const uint32_t block_dim = min(n*k, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
-
     add_norm_mtx<<<grid_dim, block_dim>>>(n, k, d_points_row_norms, d_c_norms, d_distances);
-
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    /*
+    std::vector<DATA_TYPE> h_c_tilde(k);
+    cudaMemcpy(h_c_tilde.data(), d_c_norms, sizeof(DATA_TYPE)*k, cudaMemcpyDeviceToHost);
+
+    std::for_each(h_c_tilde.begin(), h_c_tilde.end(), [](auto const& elem ){std::cout<<elem<<",";});
+    std::cout<<std::endl;
+    */
+
+
 
 }
 
