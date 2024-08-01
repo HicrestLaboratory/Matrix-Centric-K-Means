@@ -91,6 +91,7 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
 		}
 	}
 
+#if LOG
     std::ofstream points_out;
     points_out.open("points-ours.out");
     for (int i=0; i<n; i++) {
@@ -100,6 +101,7 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
       points_out<<std::endl;
     }
     points_out.close();
+#endif
 
 
 
@@ -375,6 +377,7 @@ void Kmeans::init_centroids_rand()
     for (int i=0; i<n; i++) {
         h_clusters[i] = i % k;
     }
+    //std::generate(h_clusters.begin(), h_clusters.end(), [&](){return distr(gen);});
     std::vector<uint32_t> h_clusters_len(k);
     std::for_each(h_clusters.begin(), h_clusters.end(), [&](auto const& cluster)mutable {h_clusters_len[cluster] += 1;});
 
@@ -761,7 +764,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
     /* Number of centroids after pruning stationary centroids */
     auto d_k_pruned = raft::make_device_scalar(raft_handle, k);
-    uint32_t k_pruned = k;
+    const uint32_t k_pruned = k;
 
     KeyValueIndexOp<uint32_t, DATA_TYPE> conversion_op ;
     auto min_cluster_and_distance = raft::make_device_vector<raft::KeyValuePair<uint32_t, DATA_TYPE>, uint32_t>(raft_handle, n);
@@ -868,8 +871,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         }
         centroids_out<<std::endl<<"END DISTANCES ITER "<<iter-1<<std::endl;
 #endif
-
-
 
         auto pw_dist_view = raft::make_device_matrix_view<DATA_TYPE, uint32_t>(d_distances, n, k_pruned);
 
@@ -1279,20 +1280,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
 		/////////////////////////////////////////////* CHECK IF CONVERGED */////////////////////////////////////////////
 
-		// Check exit
-        /*
-        auto sqrd_norm = raft::make_device_scalar(raft_handle, DATA_TYPE(0));
-        raft::linalg::mapThenSumReduce(sqrd_norm.data_handle(),
-                                         d*k,
-                                         raft::sqdiff_op{},
-                                         stream,
-                                         d_centroids,
-                                         d_new_centroids);
-
-        DATA_TYPE sqrd_norm_err = 0;
-        raft::copy(&sqrd_norm_err, sqrd_norm.data_handle(), sqrd_norm.size(), stream);
-        */
-
 #if PRUNE_CENTROIDS
         if (iter > 1) {
             const uint32_t prune_threads = min((uint32_t)deviceProps->maxThreadsPerBlock,
@@ -1319,6 +1306,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
                                                 raft::value_op{},
                                                 raft::add_op{});
         score = d_score.value(stream);
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
         if (iter==maxiter) {
             thrust::copy(clusters, clusters+n, d_clusters.begin());
