@@ -344,6 +344,22 @@ __global__ void compute_v_sparse_csc_permuted(DATA_TYPE * d_vals,
 }
 
 
+template <typename ClusterIter>
+__global__ void compute_perm_vec(uint32_t * d_p,
+                                 ClusterIter d_points_clusters,
+                                 uint32_t * d_clusters_offsets,
+                                 const uint32_t n)
+{
+    const int32_t tid = threadIdx.x + blockDim.x * blockIdx.x; 
+    if (tid < n) {
+        const uint32_t cluster = d_points_clusters[tid];
+        unsigned int idx = atomicAdd(d_clusters_offsets + cluster, 1);
+        d_p[idx] = tid;
+    }
+}
+
+
+
 __global__ void init_z(const uint32_t n, const uint32_t k,
                        const DATA_TYPE * d_distances,
                        const int32_t * V_rowinds,

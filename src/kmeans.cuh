@@ -103,6 +103,10 @@ class Kmeans {
      */
     uint64_t run(uint64_t maxiter, bool check_converged);
 
+    template <typename ClusterIter>
+    void permute_kernel_mat(ClusterIter clusters,
+                                uint32_t * d_cluster_offsets);
+
     inline float get_score() const {return score;}
 
   private:
@@ -124,6 +128,8 @@ class Kmeans {
     DATA_TYPE* d_centroids;
     DATA_TYPE* d_centroids_row_norms;
     DATA_TYPE* d_z_vals;
+
+    uint32_t * d_perm_vec;
 
     DATA_TYPE* d_B;
 

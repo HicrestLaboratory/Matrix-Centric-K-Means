@@ -280,6 +280,8 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
 
 #endif
 
+    CHECK_CUDA_ERROR(cudaMalloc(&d_perm_vec, sizeof(uint32_t)*n));
+
 }
 
 Kmeans::~Kmeans ()
@@ -308,6 +310,7 @@ Kmeans::~Kmeans ()
 
     CHECK_CUDA_ERROR(cudaFree(d_centroids_row_norms));
     CHECK_CUDA_ERROR(cudaFree(d_z_vals));
+    CHECK_CUDA_ERROR(cudaFree(d_perm_vec));
 
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(B_descr));
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnVec(c_tilde_descr));
@@ -353,17 +356,19 @@ void Kmeans::init_centroids_rand()
 
     int32_t* d_clusters;
     CHECK_CUDA_ERROR(cudaMalloc(&d_clusters, n * sizeof(int32_t)));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_clusters, h_clusters.data(), sizeof(int32_t)*n, cudaMemcpyHostToDevice));
+
 
     uint32_t* d_clusters_len;
     CHECK_CUDA_ERROR(cudaMalloc(&d_clusters_len, k * sizeof(uint32_t)));
-
-    CHECK_CUDA_ERROR(cudaMemcpy(d_clusters, h_clusters.data(), sizeof(int32_t)*n, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_clusters_len, h_clusters_len.data(), sizeof(uint32_t)*k, cudaMemcpyHostToDevice));
+
 
     thrust::device_vector<uint32_t> d_cluster_offsets(k);
     thrust::device_ptr<uint32_t> d_clusters_len_ptr(d_clusters_len);
 
     thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k, d_cluster_offsets.begin());
+
 
     const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
     const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
@@ -377,9 +382,15 @@ void Kmeans::init_centroids_rand()
       thrust::raw_pointer_cast(d_cluster_offsets.data()),
       n
     );
-
-
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+
+    thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
+                            d_cluster_offsets.begin());
+
+    permute_kernel_mat(d_clusters, 
+                       thrust::raw_pointer_cast(d_cluster_offsets.data()));
+
 
     CHECK_CUDA_ERROR(cudaFree(d_clusters));
     CHECK_CUDA_ERROR(cudaFree(d_clusters_len));
@@ -733,6 +744,12 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
     KeyValueIndexOp<uint32_t, DATA_TYPE> conversion_op ;
     auto min_cluster_and_distance = raft::make_device_vector<raft::KeyValuePair<uint32_t, DATA_TYPE>, uint32_t>(raft_handle, n);
 
+    //extract cluster labels from kvpair into d_points_clusters
+    cub::TransformInputIterator<uint32_t,
+                                KeyValueIndexOp<uint32_t, DATA_TYPE>,
+                                raft::KeyValuePair<uint32_t, DATA_TYPE>*>
+    clusters(min_cluster_and_distance.data_handle(), conversion_op);
+
     raft::KeyValuePair<uint32_t, DATA_TYPE> initial_value(0, std::numeric_limits<DATA_TYPE>::max());
     thrust::fill(raft::resource::get_thrust_policy(raft_handle),
                min_cluster_and_distance.data_handle(),
@@ -781,7 +798,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         cudaEventRecord(e_perf_dist_start);
 
 #endif
-
         compute_distances_spmm_no_centroids(cusparseHandle,
                                             d, n, k,
                                             d_points_row_norms,
@@ -855,11 +871,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-        //extract cluster labels from kvpair into d_points_clusters
-        cub::TransformInputIterator<uint32_t,
-                                    KeyValueIndexOp<uint32_t, DATA_TYPE>,
-                                    raft::KeyValuePair<uint32_t, DATA_TYPE>*>
-        clusters(min_cluster_and_distance.data_handle(), conversion_op);
 
         raft::linalg::reduce_cols_by_key(one_vec.data_handle(),
                                             clusters,
@@ -926,8 +937,15 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
           thrust::raw_pointer_cast(d_cluster_offsets.data()),
           n
         );
-
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+
+        // d_cluster_offsets was mutated by initializing v, so need to reset it here
+        thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
+                                d_cluster_offsets.begin());
+
+        permute_kernel_mat(clusters, 
+                           thrust::raw_pointer_cast(d_cluster_offsets.data()));
 
 #if PERFORMANCES_KERNEL_CENTROIDS
 
@@ -1016,6 +1034,28 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
 	return converged;
 }
+
+
+template <typename ClusterIter>
+void Kmeans::permute_kernel_mat(ClusterIter clusters,
+                                uint32_t * d_cluster_offsets)
+{
+    const uint32_t tpb = std::min((size_t)deviceProps->maxThreadsPerBlock, n);
+    const uint32_t blocks = std::ceil(static_cast<float>(n) / static_cast<float>(tpb));
+    compute_perm_vec<<<blocks, tpb>>>(d_perm_vec, clusters, d_cluster_offsets, (uint32_t)n);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    //TODO: thrust::permute_iterator stuff to permute rows of d_B, the kernel matrix
+
+}
+
+
+
+
+
+
+
+
 
 
 
