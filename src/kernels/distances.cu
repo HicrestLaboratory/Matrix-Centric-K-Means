@@ -570,6 +570,7 @@ __global__ void add_norm_mtx(const uint32_t m, const uint32_t n,
 }
 
 
+#ifdef LEGACY
 /* Use the formulation from benoit et al */
 void compute_gemm_distances_arizona(cublasHandle_t& handle,
                                     const uint32_t d, const uint32_t n, const uint32_t k,
@@ -580,7 +581,7 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
     const DATA_TYPE alpha = -2.0;
     const DATA_TYPE beta = 0.0;
     
-    /* -2.0*P*C 
+    /* -2.0*P*C */ 
     CHECK_CUBLAS_ERROR(cublasSgemm(handle,
                                     CUBLAS_OP_T, CUBLAS_OP_N,
                                     k, n, d,
@@ -589,7 +590,6 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
                                     d_points, d,
                                     &beta,
                                     d_distances, k));
-                                    */
 
 
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
@@ -603,6 +603,7 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
 }
+#endif
 
 
 void compute_distances_spmm(const cusparseHandle_t& handle,
@@ -760,8 +761,8 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
 
     /* Setup z */
     // cuSPARSE does not let you fetch individual sparse matrix fields, you have to do all of them
-    int32_t * V_rowinds;
     int32_t * V_colptrs;
+    int32_t * V_rowinds;
     DATA_TYPE * V_vals;
     int64_t rows, cols, nnz;
     cusparseIndexType_t col_type, row_type;

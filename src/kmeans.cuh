@@ -129,7 +129,7 @@ class Kmeans {
 
     DATA_TYPE * d_V_vals;
     int32_t * d_V_rowinds;
-    int32_t * d_V_col_offsets;
+    int32_t * d_V_colptrs;
 
     DATA_TYPE * d_F_vals;
     int32_t * d_F_colinds;

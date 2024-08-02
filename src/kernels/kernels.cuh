@@ -11,7 +11,7 @@
 #include "../include/common.h"
 #include "../cuda_utils.cuh"
 #include <thrust/device_ptr.h>
-#include <thrust/tabulate.h>
+#include <thrust/binary_search.h>
 
 
 
@@ -75,6 +75,7 @@ struct LinearKernel
 };
 
 
+//TODO: change other kernel functions to have a op struct like polynomial kernel 
 struct SigmoidKernel 
 {
 
@@ -104,14 +105,6 @@ struct SigmoidKernel
 };
 
 
-struct PolynomialUnaryOp
-{
-    __host__ __device__
-    DATA_TYPE operator()(const DATA_TYPE& elem)
-    {
-        return -2.0*powf(elem + 1, 2);
-    }
-};
 
 struct PolynomialKernel 
 {
@@ -123,24 +116,25 @@ struct PolynomialKernel
         return {blocks, tpb};
     }
 
+    struct PolynomialUnaryOp
+    {
+        __host__ __device__
+        DATA_TYPE operator()(const DATA_TYPE& elem)
+        {
+            return -2.0*powf(elem + 1, 2);
+        }
+    };
+
 
     static void function(const unsigned long long n,
                          const uint32_t d,
                          DATA_TYPE * d_B)
     {
 
-
-        const DATA_TYPE gamma = 1.0; /// static_cast<float>(d);
-        const DATA_TYPE coef = 1.0;
-        const DATA_TYPE deg = 2;
-
-
-        //auto params = get_grid_params(n);
-        //polynomial<<<params.first, params.second>>>(n, d_B, gamma, coef, deg);
+        //TODO: parameterize w/ gamma and c 
         thrust::device_ptr<DATA_TYPE> d_B_ptr(d_B);
         unsigned long long offset = static_cast<unsigned long long>(n)*static_cast<unsigned long long>(n);
         thrust::transform(d_B_ptr, d_B_ptr+offset, d_B_ptr, PolynomialUnaryOp());
-
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
     }
@@ -324,6 +318,29 @@ __global__ void compute_v_sparse(DATA_TYPE * d_vals,
         d_col_offsets[tid] = tid;
     }
     d_col_offsets[n] = n; //This might be horrible
+}
+
+
+
+// CSC permuted 
+template <typename ClusterIter>
+__global__ void compute_v_sparse_csc_permuted(DATA_TYPE * d_vals,
+                                             int32_t * d_rowinds,
+                                             int32_t * d_col_offsets,
+                                             ClusterIter d_points_clusters,
+                                             const uint32_t * d_clusters_len,
+                                             uint32_t * d_clusters_offsets,
+                                             const uint32_t n)
+{
+    const int32_t tid = threadIdx.x + blockDim.x * blockIdx.x; 
+    if (tid < n) {
+        const uint32_t cluster = d_points_clusters[tid];
+        unsigned int idx = atomicAdd(d_clusters_offsets + cluster, 1);
+        d_vals[idx] = ((DATA_TYPE) 1) / (DATA_TYPE)(d_clusters_len[cluster]);
+        d_rowinds[idx] = cluster;
+        d_col_offsets[tid] = tid;
+    }
+    d_col_offsets[n] = n;
 }
 
 
@@ -569,6 +586,7 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
 
     
 }
+
 
 
 __global__ void check_convergence( const DATA_TYPE * d_centroids,
