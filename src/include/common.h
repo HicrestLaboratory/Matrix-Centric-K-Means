@@ -31,7 +31,7 @@
 
 #define DEBUG_OUTPUT_INFO 1
 
-#define DATA_TYPE float
+#define DATA_TYPE float 
 
 //#define NVTX
 

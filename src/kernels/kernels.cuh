@@ -10,6 +10,8 @@
 
 #include "../include/common.h"
 #include "../cuda_utils.cuh"
+#include <thrust/device_ptr.h>
+#include <thrust/tabulate.h>
 
 
 
@@ -33,7 +35,7 @@ __global__ void polynomial(const uint32_t n,
                                    DATA_TYPE * d_B,
                                    const DATA_TYPE gamma,
                                    const DATA_TYPE coef,
-                                   const uint32_t deg);
+                                   const DATA_TYPE deg);
 __global__ void polynomial_inv(const uint32_t n,
                                    DATA_TYPE * d_B,
                                    const DATA_TYPE gamma,
@@ -102,17 +104,27 @@ struct SigmoidKernel
 };
 
 
+struct PolynomialUnaryOp
+{
+    __host__ __device__
+    DATA_TYPE operator()(const DATA_TYPE& elem)
+    {
+        return -2.0*powf(elem + 1, 2);
+    }
+};
+
 struct PolynomialKernel 
 {
-    static std::pair<uint32_t, uint32_t> get_grid_params(const uint32_t n) 
+    static std::pair<uint64_t, uint64_t> get_grid_params(const uint32_t n) 
     {
         const uint32_t max_tpb = 1024;
-        const uint32_t tpb = std::min(n*n, max_tpb);
-        const uint32_t blocks = std::ceil( static_cast<float>(n*n) / static_cast<float>(tpb) );
+        const uint64_t tpb = std::min(n*n, max_tpb);
+        const uint64_t blocks = std::ceil( static_cast<double>(n*n) / static_cast<double>(tpb) );
         return {blocks, tpb};
     }
 
-    static void function(const uint32_t n,
+
+    static void function(const unsigned long long n,
                          const uint32_t d,
                          DATA_TYPE * d_B)
     {
@@ -120,15 +132,16 @@ struct PolynomialKernel
 
         const DATA_TYPE gamma = 1.0; /// static_cast<float>(d);
         const DATA_TYPE coef = 1.0;
-        const uint32_t deg = 2;
+        const DATA_TYPE deg = 2;
 
 
-        auto params = get_grid_params(n);
-        std::cout<<params.first<<","<<params.second<<std::endl;
+        //auto params = get_grid_params(n);
+        //polynomial<<<params.first, params.second>>>(n, d_B, gamma, coef, deg);
+        thrust::device_ptr<DATA_TYPE> d_B_ptr(d_B);
+        unsigned long long offset = static_cast<unsigned long long>(n)*static_cast<unsigned long long>(n);
+        thrust::transform(d_B_ptr, d_B_ptr+offset, d_B_ptr, PolynomialUnaryOp());
 
-        polynomial<<<params.first, params.second>>>(n, d_B, gamma, coef, deg);
-
-        cudaDeviceSynchronize();
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
     }
 
@@ -154,7 +167,6 @@ struct RBFKernel
         const DATA_TYPE gamma = 1/(DATA_TYPE)d; /// static_cast<float>(d);
 
         auto params = get_grid_params(n);
-        std::cout<<params.first<<","<<params.second<<std::endl;
 
         rbf<<<params.first, params.second>>>(n, d_B, gamma);
 
@@ -486,14 +498,14 @@ __global__ void scale_diag(DATA_TYPE * d_M, const uint32_t n, const DATA_TYPE al
 template <typename Kernel>
 void init_kernel_mtx(cublasHandle_t& cublasHandle,
                      cudaDeviceProp * deviceProps,
-                     const uint32_t n,
+                     const unsigned long long n,
                      const uint32_t k,
                      const uint32_t d,
                      const DATA_TYPE * d_points,
                      DATA_TYPE * d_B)
 {
-    float b_beta = 0.0;
-    float b_alpha = 1.0;
+    DATA_TYPE b_beta = 0.0;
+    DATA_TYPE b_alpha = 1.0;
 
     if (n<=1000 && false) {
         CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle, 
@@ -542,14 +554,15 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
                                        d_B, n));
 
 
-        const uint32_t scale_diag_b_block_dim = std::min((uint32_t)deviceProps->maxThreadsPerBlock, n);
-        const uint32_t scale_diag_b_grid_dim = std::ceil(static_cast<float>(n)/static_cast<float>(scale_diag_b_block_dim));
+        const uint32_t scale_diag_b_block_dim = std::min((unsigned long long )deviceProps->maxThreadsPerBlock, n);
+        const uint32_t scale_diag_b_grid_dim = std::ceil(static_cast<double>(n)/static_cast<double>(scale_diag_b_block_dim));
 
         scale_diag<<<scale_diag_b_grid_dim, scale_diag_b_block_dim>>>(d_B, n, 0.5);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
         //TODO: Make triangular version of these
         Kernel::function(n, d, d_B);
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
         CHECK_CUDA_ERROR(cudaFree(d_B_tmp));
     }

@@ -235,6 +235,8 @@ uint32_t last_nk = 0;
  * @param d_C the matrix of centers (prefixed with 1s)
  * @param d_distances size: n * k
  */
+
+#ifdef LEGACY
 void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProps, 
                                 const uint32_t d1, const uint32_t n, const uint32_t k, 
                                 DATA_TYPE* d_P, DATA_TYPE* d_C, DATA_TYPE* d_distances) {
@@ -402,6 +404,7 @@ void compute_gemm_distances (cublasHandle_t& handle, cudaDeviceProp * deviceProp
 	CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 	CHECK_CUDA_ERROR(cudaFree(d_tmp_arr));
 }
+#endif
 
 
 void schedule_copy_diag(cudaDeviceProp * props, const int kn, int * num_blocks, int * num_threads) {
@@ -450,6 +453,7 @@ void compute_gemm_distances_free () {
 }
 
 
+#ifdef LEGACY
 void compute_gemm_distances_fast(cublasHandle_t& handle, 
                                 const uint32_t d, const uint32_t n, const uint32_t k, 
                                 DATA_TYPE* d_P, DATA_TYPE* d_C, DATA_TYPE* d_distances)
@@ -469,6 +473,7 @@ void compute_gemm_distances_fast(cublasHandle_t& handle,
                                  d_distances, n));
 
 }
+#endif
 
 void check_p_correctness(DATA_TYPE * P, DATA_TYPE * points, uint32_t n, uint32_t d) 
 {
@@ -519,70 +524,6 @@ void check_c_correctness(DATA_TYPE * C, DATA_TYPE * centroids, uint32_t k, uint3
 }
 
 
-/* This is col major */
-void compute_row_norm_mtx(cublasHandle_t& handle, 
-                        const uint32_t m, const uint32_t n, const uint32_t k, 
-                        const DATA_TYPE * mtx, 
-                        DATA_TYPE * d_norms,
-                        DATA_TYPE * norm_mtx)
-{
-    /* mtx is m*k (k*d) */
-    /* norm_mtx is n*m (n*k) */
-
-    for (uint32_t i=0; i<m; i++) {
-        CHECK_CUBLAS_ERROR(cublasSdot(handle,
-                                      k,
-                                      (mtx+(i)),
-                                      m,
-                                      (mtx+(i)),
-                                      m,
-                                      &(d_norms[i])));
-    }
-
-    for (uint32_t i=0; i<n; i++) {
-        CHECK_CUBLAS_ERROR(cublasScopy(handle,
-                                       m,
-                                       d_norms,
-                                       1,
-                                       (norm_mtx + i),
-                                       n));
-    }
-    
-
-}
-
-
-/* We assume mtx is stored in row major order */
-void compute_col_norm_mtx(cublasHandle_t& handle, 
-                        const uint32_t m, const uint32_t n, const uint32_t k, 
-                        const DATA_TYPE * mtx,
-                        DATA_TYPE * d_norms,
-                        DATA_TYPE * norm_mtx)
-{
-    /* mtx is m*k (n*d) */
-    /* norm_mtx is m*n (n*k) */
-
-    for (uint32_t i=0; i<m; i++) {
-        CHECK_CUBLAS_ERROR(cublasSdot(handle,
-                                      k,
-                                      (mtx+(i*k)),
-                                      1,
-                                      (mtx+(i*k)),
-                                      1,
-                                      &(d_norms[i])));
-    }
-
-    /* Copy norms into each col of norm_mtx, stored in col major order */
-    for (uint32_t i=0; i<n; i++) {
-        CHECK_CUBLAS_ERROR(cublasScopy(handle,
-                                       m,
-                                       d_norms,
-                                       1,
-                                       (norm_mtx + i*m),
-                                       1));
-    }
-
-}
 
 
 __global__ void compute_norm_mtx(const uint32_t m, const uint32_t n,  
@@ -621,8 +562,8 @@ __global__ void add_norm_mtx(const uint32_t m, const uint32_t n,
 {
     const uint32_t tid = threadIdx.x + (blockDim.x * blockIdx.x);
     if (tid < m*n) {
-        const uint32_t point_norm_idx = (tid / n);
-        const uint32_t centroid_norm_idx = tid % n;
+        const uint64_t point_norm_idx = (tid / n);
+        const uint64_t centroid_norm_idx = tid % n;
         d_centroids_norms[centroid_norm_idx] = (d_centroids_norms[centroid_norm_idx] == 0) ? INFINITY : d_centroids_norms[centroid_norm_idx];
         M[tid] += (d_centroids_norms[centroid_norm_idx]);
     }
@@ -639,7 +580,7 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
     const DATA_TYPE alpha = -2.0;
     const DATA_TYPE beta = 0.0;
     
-    /* -2.0*P*C */
+    /* -2.0*P*C 
     CHECK_CUBLAS_ERROR(cublasSgemm(handle,
                                     CUBLAS_OP_T, CUBLAS_OP_N,
                                     k, n, d,
@@ -648,6 +589,8 @@ void compute_gemm_distances_arizona(cublasHandle_t& handle,
                                     d_points, d,
                                     &beta,
                                     d_distances, k));
+                                    */
+
 
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
@@ -760,7 +703,7 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
      * so if we access it as if it were stored in row major order, it's like we're
      * working with D.
      */
-    DATA_TYPE alpha = 1.0;
+    DATA_TYPE alpha = 1.0; //????
     const DATA_TYPE beta = 0.0;
     
     size_t buff_size = 0;
@@ -797,6 +740,23 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
 
     CHECK_CUDA_ERROR(cudaFree(d_buff));
 
+    /*
+    std::ofstream kvt_out;
+    kvt_out.open("kvt_out.out");
+    std::vector<DATA_TYPE> h_kvt(n*k);
+    cudaMemcpy(h_kvt.data(), d_distances, sizeof(DATA_TYPE)*n*k, cudaMemcpyDeviceToHost);
+    kvt_out<<"KV^T"<<std::endl;
+    for (int i=0; i<n; i++) {
+        for (int j=0; j<k; j++) {
+            kvt_out<<h_kvt[j + i*k]<<",";
+        }
+        kvt_out<<std::endl;
+    }
+    kvt_out.close();
+    */
+
+
+
 
     /* Setup z */
     // cuSPARSE does not let you fetch individual sparse matrix fields, you have to do all of them
@@ -818,6 +778,15 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
                                         &vals_type));
     DATA_TYPE * d_z_vals;
     CHECK_CUSPARSE_ERROR(cusparseDnVecGetValues(z, (void**)&d_z_vals));
+
+    /*
+    std::vector<int32_t> h_V_rowinds(n);
+    cudaMemcpy(h_V_rowinds.data(), V_rowinds, sizeof(int32_t)*n, cudaMemcpyDeviceToHost);
+    kvt_out<<"V_rowinds"<<std::endl;
+    std::for_each(h_V_rowinds.begin(), h_V_rowinds.end(), [&](auto const& elem ){kvt_out<<elem<<",";});
+
+    kvt_out.close();
+    */
 
     const uint32_t block_dim_z = min(n, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim_z = ceil((float)n / (float)block_dim_z);
@@ -863,8 +832,6 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
     std::cout<<std::endl;
     */
 
-
-
 }
 
 
@@ -887,11 +854,11 @@ __global__ void polynomial(const uint32_t n,
                                    DATA_TYPE * d_B,
                                    const DATA_TYPE gamma,
                                    const DATA_TYPE coef,
-                                   const uint32_t deg)
+                                   const DATA_TYPE deg)
 {
     const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
     if (tid < n*n) {
-        d_B[tid] = -2.0*pow(d_B[tid]*gamma + coef, deg);
+        d_B[tid] = -2.0*powf(d_B[tid]*gamma + coef, deg);
     }
 }
 

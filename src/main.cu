@@ -18,7 +18,7 @@ int main(int argc, char **argv) {
   string   out_file;
   float    tol;
   int     *seed = NULL;
-  InputParser<float> *input = NULL;
+  InputParser<DATA_TYPE> *input = NULL;
   bool check_converged;
   string dist_method_str, init_method_str, kernel_str;
 

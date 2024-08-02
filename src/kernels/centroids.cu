@@ -126,7 +126,7 @@ __global__ void compute_v_matrix(DATA_TYPE * d_V,
         const uint32_t point_idx = round * blockDim.x + threadIdx.x;
         if (point_idx < n) {
             const uint32_t this_cluster_idx = d_points_clusters[point_idx];
-            DATA_TYPE val = (cluster_idx == this_cluster_idx) ?
+            DATA_TYPE val = (cluster_idx == this_cluster_idx && d_clusters_len[cluster_idx]!=0) ?
                                 ((DATA_TYPE) 1) / ((DATA_TYPE) d_clusters_len[cluster_idx]) : 0;
             d_V[cluster_idx + k*point_idx] = val; //col major
         }
@@ -152,6 +152,7 @@ __global__ void prune_centroids(const DATA_TYPE * d_new_centroids,
 
 
 
+#ifdef LEGACY
 void compute_centroids_gemm(cublasHandle_t& handle,
                             const uint32_t d, const uint32_t n, const uint32_t k,
                             const DATA_TYPE * d_V, const DATA_TYPE * d_points,
@@ -169,6 +170,7 @@ void compute_centroids_gemm(cublasHandle_t& handle,
                                     d_centroids, k));
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 }
+#endif
 
 
 

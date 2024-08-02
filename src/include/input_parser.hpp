@@ -80,7 +80,7 @@ class InputParser {
       T *point = new T[d];
 
       int i = 0;
-      while (std::getline(in, str, '\n')) {
+      while (std::getline(in, str, '\n') && i<n) {
         std::istringstream input_str(str);
         std::string token;
         while (std::getline(input_str, token, ' ')) {
