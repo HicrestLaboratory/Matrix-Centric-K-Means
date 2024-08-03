@@ -56,7 +56,7 @@
 #include "kernels/kernels.cuh"
 
 //#define LOG_KERNEL
-#define LOG 1
+#define LOG 0
 #define LOG_PERM 0
 //#define LOG_LABELS
 
@@ -230,7 +230,7 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
 
     CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&B_descr,
                                             n, n, n,
-                                            d_B,
+                                            d_B_new,
                                             CUDA_R_32F,
                                             CUSPARSE_ORDER_ROW));
 
@@ -1076,8 +1076,8 @@ void Kmeans::permute_kernel_mat()
 
 
     /* Set B pointer */
-    CHECK_CUSPARSE_ERROR(cusparseDnMatSetValues(B_descr, d_B_new));
-    std::swap(d_B, d_B_new);
+    //CHECK_CUSPARSE_ERROR(cusparseDnMatSetValues(B_descr, d_B_new));
+    //std::swap(d_B, d_B_new);
 }
 
 
