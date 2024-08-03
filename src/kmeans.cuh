@@ -13,6 +13,8 @@
 #include <thrust/device_ptr.h>
 #include <thrust/device_vector.h>
 #include <thrust/iterator/counting_iterator.h>
+#include <thrust/iterator/permutation_iterator.h>
+#include <thrust/iterator/transform_iterator.h>
 
 #include <raft/core/kvp.hpp>
 #include <raft/core/device_resources.hpp>
@@ -87,6 +89,30 @@ class Kmeans {
 	  }
 	};
 
+    struct PermuteRowOp : public thrust::unary_function<unsigned long, unsigned long>
+    {
+        PermuteRowOp(const uint32_t _rows,
+                     const uint32_t _cols,
+                     uint32_t * _d_perm) :
+            rows(_rows), cols(_cols), d_perm(_d_perm) 
+        {}
+
+        __host__ __device__
+        unsigned long operator()(unsigned idx)
+        {
+            unsigned long i = idx / cols;
+            unsigned long new_i = d_perm[i];
+            unsigned long j = idx % cols;
+            return (new_i*cols) + j;
+        }
+            
+
+        uint32_t rows;
+        uint32_t cols;
+        uint32_t * d_perm;
+
+    };
+
 
     Kmeans(const size_t n, const uint32_t d, const uint32_t k, const float tol, const int *seed, Point<DATA_TYPE>** points, cudaDeviceProp* deviceProps,
             InitMethod _initMethod=InitMethod::random,
@@ -132,6 +158,7 @@ class Kmeans {
     uint32_t * d_perm_vec;
 
     DATA_TYPE* d_B;
+    DATA_TYPE* d_B_new;
 
     DATA_TYPE * d_V_vals;
     int32_t * d_V_rowinds;

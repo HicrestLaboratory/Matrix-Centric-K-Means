@@ -144,6 +144,7 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
 
     /* Init B */
     CHECK_CUDA_ERROR(cudaMalloc(&d_B, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
+    CHECK_CUDA_ERROR(cudaMalloc(&d_perm_vec, sizeof(uint32_t)*n));
 
     switch(_kernel)
     {
@@ -163,6 +164,10 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
             init_kernel_mtx<RBFKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
             break;
     }
+
+    CHECK_CUDA_ERROR(cudaMalloc(&d_B_new, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
+
+	CHECK_CUDA_ERROR(cudaFree(d_points));
 
 #ifdef LOG_KERNEL
     std::ofstream kernel_out;
@@ -215,13 +220,6 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
                                             CUSPARSE_INDEX_32I,
                                             CUSPARSE_INDEX_BASE_ZERO,
                                             CUDA_R_32F));
-
-
-    CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&P_descr,
-                                              n, d, d,
-                                              d_points,
-                                              CUDA_R_32F,
-                                              CUSPARSE_ORDER_ROW));
 
 
     CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&B_descr,
@@ -280,7 +278,6 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
 
 #endif
 
-    CHECK_CUDA_ERROR(cudaMalloc(&d_perm_vec, sizeof(uint32_t)*n));
 
 }
 
@@ -290,7 +287,6 @@ Kmeans::~Kmeans ()
 	delete generator;
 
 	CHECK_CUDA_ERROR(cudaFreeHost(h_points));
-	CHECK_CUDA_ERROR(cudaFree(d_points));
 
     if (d_B != NULL) {
         CHECK_CUDA_ERROR(cudaFree(d_B));
@@ -305,19 +301,16 @@ Kmeans::~Kmeans ()
     CHECK_CUDA_ERROR(cudaFree(d_V_colptrs));
 
 
-    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(P_descr));
-
-
     CHECK_CUDA_ERROR(cudaFree(d_centroids_row_norms));
     CHECK_CUDA_ERROR(cudaFree(d_z_vals));
     CHECK_CUDA_ERROR(cudaFree(d_perm_vec));
 
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(B_descr));
+    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(D_descr));
+
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnVec(c_tilde_descr));
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnVec(z_descr));
 
-
-    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(D_descr));
     CHECK_CUSPARSE_ERROR(cusparseDestroySpMat(V_descr));
 
     CHECK_CUSPARSE_ERROR(cusparseDestroy(cusparseHandle));
@@ -1040,12 +1033,36 @@ template <typename ClusterIter>
 void Kmeans::permute_kernel_mat(ClusterIter clusters,
                                 uint32_t * d_cluster_offsets)
 {
+    /* Compute permutation vector */
     const uint32_t tpb = std::min((size_t)deviceProps->maxThreadsPerBlock, n);
     const uint32_t blocks = std::ceil(static_cast<float>(n) / static_cast<float>(tpb));
     compute_perm_vec<<<blocks, tpb>>>(d_perm_vec, clusters, d_cluster_offsets, (uint32_t)n);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-    //TODO: thrust::permute_iterator stuff to permute rows of d_B, the kernel matrix
+
+    /* Need to allocate temporary storage for the new, permuted kernel matrix */
+    unsigned long long n2 = n*n;
+
+
+    /* Use thrust fancy iterators and copying to write permuted kernel matrix to temporary storage */
+    thrust::device_ptr<DATA_TYPE> d_B_ptr(d_B);
+    thrust::device_ptr<DATA_TYPE> d_B_new_ptr(d_B_new);
+    thrust::copy_n (
+        thrust::make_permutation_iterator(
+            d_B_ptr, 
+            thrust::make_transform_iterator(
+                thrust::counting_iterator<unsigned>(0),
+                PermuteRowOp(n, n, d_perm_vec)
+            )
+        ),
+        n2*sizeof(DATA_TYPE),
+        d_B_new_ptr
+    );
+
+
+    /* Set B pointer */
+    CHECK_CUSPARSE_ERROR(cusparseDnMatSetValues(B_descr, d_B_new));
+    std::swap(d_B, d_B_new);
 
 }
 
