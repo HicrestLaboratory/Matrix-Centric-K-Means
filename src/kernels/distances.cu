@@ -556,14 +556,26 @@ __global__ void compute_norm_mtx(const uint32_t m, const uint32_t n,
 
 
 __global__ void add_norm_mtx(const uint32_t m, const uint32_t n,
-                             const DATA_TYPE * d_points_norms,
                              DATA_TYPE * d_centroids_norms, 
                              DATA_TYPE * M)
 {
     const uint32_t tid = threadIdx.x + (blockDim.x * blockIdx.x);
     if (tid < m*n) {
-        const uint64_t point_norm_idx = (tid / n);
         const uint64_t centroid_norm_idx = tid % n;
+        d_centroids_norms[centroid_norm_idx] = (d_centroids_norms[centroid_norm_idx] == 0) ? INFINITY : d_centroids_norms[centroid_norm_idx];
+        M[tid] += (d_centroids_norms[centroid_norm_idx]);
+    }
+}
+
+
+__global__ void add_norm_mtx_permuted(const uint32_t m, const uint32_t n,
+                                      DATA_TYPE * d_centroids_norms, 
+                                      const uint32_t * d_perm_vec,
+                                      DATA_TYPE * M)
+{
+    const uint32_t tid = threadIdx.x + (blockDim.x * blockIdx.x);
+    if (tid < m*n) {
+        const uint64_t centroid_norm_idx = d_perm_vec[tid % n];
         d_centroids_norms[centroid_norm_idx] = (d_centroids_norms[centroid_norm_idx] == 0) ? INFINITY : d_centroids_norms[centroid_norm_idx];
         M[tid] += (d_centroids_norms[centroid_norm_idx]);
     }
@@ -674,6 +686,20 @@ __global__ void init_z(const uint32_t n, const uint32_t k,
     }
 }
 
+__global__ void init_z_permuted(const uint32_t n, const uint32_t k,
+                               const DATA_TYPE * d_distances,
+                               const int32_t * d_clusters,
+                               const uint32_t * d_perm_vec,
+                               DATA_TYPE * d_z_vals)
+{
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < n) {
+        const int32_t rid = d_clusters[tid];
+        const uint32_t z_idx = d_perm_vec[tid];
+        d_z_vals[tid] = d_distances[rid + (k*z_idx)];
+    }
+}
+
 
 __global__  void filter_c_norms(const uint32_t k,
                                 DATA_TYPE * c_norms)
@@ -683,6 +709,7 @@ __global__  void filter_c_norms(const uint32_t k,
         c_norms[tid] = (c_norms[tid] == 0) ? INFINITY : c_norms[tid];
     }
 }
+
 
 void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
                                         const uint32_t d, 
@@ -694,6 +721,8 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
                                         cusparseDnMatDescr_t& D,
                                         cusparseDnVecDescr_t& c_tilde,
                                         cusparseDnVecDescr_t& z,
+                                        const uint32_t * d_perm_vec,
+                                        const int32_t * d_clusters,
                                         DATA_TYPE * d_distances)
 {
 
@@ -741,7 +770,6 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
 
     CHECK_CUDA_ERROR(cudaFree(d_buff));
 
-    /*
     std::ofstream kvt_out;
     kvt_out.open("kvt_out.out");
     std::vector<DATA_TYPE> h_kvt(n*k);
@@ -754,7 +782,6 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
         kvt_out<<std::endl;
     }
     kvt_out.close();
-    */
 
 
 
@@ -786,12 +813,12 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
     kvt_out<<"V_rowinds"<<std::endl;
     std::for_each(h_V_rowinds.begin(), h_V_rowinds.end(), [&](auto const& elem ){kvt_out<<elem<<",";});
 
-    kvt_out.close();
     */
 
     const uint32_t block_dim_z = min(n, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim_z = ceil((float)n / (float)block_dim_z);
-    init_z<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, V_rowinds, d_z_vals);
+    init_z_permuted<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, V_rowinds, d_perm_vec, d_z_vals);
+    //init_z<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, V_rowinds, d_z_vals);
 
     /* SpMV to compute c_tilde */
     DATA_TYPE * d_c_norms;
@@ -818,20 +845,23 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     CHECK_CUDA_ERROR(cudaFree(d_buff));
 
-
     /* Now we can add norms to d_distances */
     const uint32_t block_dim = min(n*k, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
-    add_norm_mtx<<<grid_dim, block_dim>>>(n, k, d_points_row_norms, d_c_norms, d_distances);
+    /*
+    add_norm_mtx_permuted<<<grid_dim, block_dim>>>(n, k, d_points_row_norms, d_c_norms,
+                                            d_perm_vec,
+                                            d_distances);
+                                            */
+    add_norm_mtx<<<grid_dim, block_dim>>>(n, k, d_c_norms,
+                                            d_distances);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-    /*
     std::vector<DATA_TYPE> h_c_tilde(k);
     cudaMemcpy(h_c_tilde.data(), d_c_norms, sizeof(DATA_TYPE)*k, cudaMemcpyDeviceToHost);
 
     std::for_each(h_c_tilde.begin(), h_c_tilde.end(), [](auto const& elem ){std::cout<<elem<<",";});
     std::cout<<std::endl;
-    */
 
 }
 

@@ -56,9 +56,11 @@
 #include "kernels/kernels.cuh"
 
 //#define LOG_KERNEL
-#define LOG 0
+#define LOG 1
+#define LOG_PERM 0
 //#define LOG_LABELS
 
+//std::ofstream permute_out;
 
 using namespace std;
 
@@ -80,6 +82,9 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
                 initMethod(_initMethod),
                 dist_method(_distMethod)
 {
+#if LOG_PERM
+    permute_out.open("permute_out.out");
+#endif
 
     CHECK_CUBLAS_ERROR(cublasCreate(&cublasHandle));
     CHECK_CUSPARSE_ERROR(cusparseCreate(&cusparseHandle));
@@ -145,6 +150,7 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
     /* Init B */
     CHECK_CUDA_ERROR(cudaMalloc(&d_B, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
     CHECK_CUDA_ERROR(cudaMalloc(&d_perm_vec, sizeof(uint32_t)*n));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_clusters, n * sizeof(int32_t)));
 
     switch(_kernel)
     {
@@ -165,9 +171,9 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
             break;
     }
 
+	CHECK_CUDA_ERROR(cudaFree(d_points));
     CHECK_CUDA_ERROR(cudaMalloc(&d_B_new, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
 
-	CHECK_CUDA_ERROR(cudaFree(d_points));
 
 #ifdef LOG_KERNEL
     std::ofstream kernel_out;
@@ -284,12 +290,17 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
 Kmeans::~Kmeans ()
 {
 
+#if LOG_PERM
+    permute_out.close();
+#endif
+
 	delete generator;
 
 	CHECK_CUDA_ERROR(cudaFreeHost(h_points));
 
     if (d_B != NULL) {
         CHECK_CUDA_ERROR(cudaFree(d_B));
+        CHECK_CUDA_ERROR(cudaFree(d_B_new));
     }
 
 	if (h_centroids_matrix != NULL) {
@@ -304,6 +315,8 @@ Kmeans::~Kmeans ()
     CHECK_CUDA_ERROR(cudaFree(d_centroids_row_norms));
     CHECK_CUDA_ERROR(cudaFree(d_z_vals));
     CHECK_CUDA_ERROR(cudaFree(d_perm_vec));
+    CHECK_CUDA_ERROR(cudaFree(d_clusters));
+    
 
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(B_descr));
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(D_descr));
@@ -338,17 +351,12 @@ void Kmeans::init_centroids_rand()
     std::for_each(h_clusters.begin(), h_clusters.end(), [&](auto const& cluster)mutable {h_clusters_len[cluster] += 1;});
 
 #if LOG
-    std::for_each(h_clusters.begin(), h_clusters.end(), [](auto elem){std::cout<<elem<<",";});
-    std::cout<<endl;
-
     std::cout<<"CLUSTER LENS"<<std::endl;
     std::for_each(h_clusters_len.begin(), h_clusters_len.end(), [](auto elem){std::cout<<(DATA_TYPE)1/(DATA_TYPE)elem<<",";});
     std::cout<<endl;
 #endif
 
 
-    int32_t* d_clusters;
-    CHECK_CUDA_ERROR(cudaMalloc(&d_clusters, n * sizeof(int32_t)));
     CHECK_CUDA_ERROR(cudaMemcpy(d_clusters, h_clusters.data(), sizeof(int32_t)*n, cudaMemcpyHostToDevice));
 
 
@@ -361,7 +369,7 @@ void Kmeans::init_centroids_rand()
     thrust::device_ptr<uint32_t> d_clusters_len_ptr(d_clusters_len);
 
     thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k, d_cluster_offsets.begin());
-
+    set_perm_vec(d_clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
 
     const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
     const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
@@ -372,20 +380,13 @@ void Kmeans::init_centroids_rand()
       d_V_rowinds,
       d_V_colptrs,
       d_clusters, d_clusters_len,
-      thrust::raw_pointer_cast(d_cluster_offsets.data()),
+      d_perm_vec,
       n
     );
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
+    permute_kernel_mat();
 
-    thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
-                            d_cluster_offsets.begin());
-
-    permute_kernel_mat(d_clusters, 
-                       thrust::raw_pointer_cast(d_cluster_offsets.data()));
-
-
-    CHECK_CUDA_ERROR(cudaFree(d_clusters));
     CHECK_CUDA_ERROR(cudaFree(d_clusters_len));
 
 }
@@ -726,7 +727,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
     const cudaStream_t stream = raft::resource::get_cuda_stream(raft_handle);
 
     rmm::device_uvector<char> workspace(0, stream);
-    thrust::device_vector<uint32_t> d_clusters(n);
     auto one_vec = raft::make_device_vector<uint32_t>(raft_handle, n);
     thrust::fill(raft::resource::get_thrust_policy(raft_handle),
                     one_vec.data_handle(),
@@ -798,6 +798,8 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
                                             D_descr, 
                                             c_tilde_descr,
                                             z_descr,
+                                            d_perm_vec,
+                                            d_clusters,
                                             d_distances);
 
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
@@ -891,6 +893,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
 
 #if LOG
+        /*
         thrust::device_vector<uint32_t> d_clusters(n);
         thrust::copy(clusters, clusters+n, d_clusters.begin());
         uint32_t * h_clusters = new uint32_t[n];
@@ -901,6 +904,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         }
         centroids_out<<std::endl;
         delete[] h_clusters;
+        */
 #endif
 
 
@@ -917,6 +921,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 #endif
         thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
                                 d_cluster_offsets.begin());
+        set_perm_vec(clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
 
         const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
         const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
@@ -927,18 +932,13 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
           d_V_rowinds,
           d_V_colptrs,
           clusters, d_clusters_len,
-          thrust::raw_pointer_cast(d_cluster_offsets.data()),
+          d_perm_vec,
           n
         );
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
 
-        // d_cluster_offsets was mutated by initializing v, so need to reset it here
-        thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
-                                d_cluster_offsets.begin());
-
-        permute_kernel_mat(clusters, 
-                           thrust::raw_pointer_cast(d_cluster_offsets.data()));
+        permute_kernel_mat();
 
 #if PERFORMANCES_KERNEL_CENTROIDS
 
@@ -970,8 +970,10 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
         if (iter==maxiter) {
+            /*
             thrust::copy(clusters, clusters+n, d_clusters.begin());
             thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
+            */
             break;
         }
 
@@ -979,8 +981,10 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
             (iter > 1) &&
             (std::abs(score-last_score) < tol)) {
             converged = iter;
+            /*
             thrust::copy(clusters, clusters+n, d_clusters.begin());
             thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
+            */
             break;
         }
 
@@ -1030,19 +1034,30 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
 
 template <typename ClusterIter>
-void Kmeans::permute_kernel_mat(ClusterIter clusters,
-                                uint32_t * d_cluster_offsets)
+void Kmeans::set_perm_vec(ClusterIter clusters,
+                          uint32_t * d_cluster_offsets)
 {
+
     /* Compute permutation vector */
     const uint32_t tpb = std::min((size_t)deviceProps->maxThreadsPerBlock, n);
     const uint32_t blocks = std::ceil(static_cast<float>(n) / static_cast<float>(tpb));
     compute_perm_vec<<<blocks, tpb>>>(d_perm_vec, clusters, d_cluster_offsets, (uint32_t)n);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
+#if LOG_PERM
+    std::vector<uint32_t> h_perm(n);
+    cudaMemcpy(h_perm.data(), d_perm_vec, sizeof(uint32_t)*n, cudaMemcpyDeviceToHost);
+    permute_out<<"PERM VEC"<<std::endl;;
+    std::for_each(h_perm.begin(), h_perm.end(), [&](auto const& elem) {permute_out<<elem<<",";});
+    permute_out<<std::endl;
+#endif
 
-    /* Need to allocate temporary storage for the new, permuted kernel matrix */
-    unsigned long long n2 = n*n;
+}
 
+
+void Kmeans::permute_kernel_mat()
+{
+    unsigned long long n2 = (unsigned long long )n*(unsigned long long )n;
 
     /* Use thrust fancy iterators and copying to write permuted kernel matrix to temporary storage */
     thrust::device_ptr<DATA_TYPE> d_B_ptr(d_B);
@@ -1051,11 +1066,11 @@ void Kmeans::permute_kernel_mat(ClusterIter clusters,
         thrust::make_permutation_iterator(
             d_B_ptr, 
             thrust::make_transform_iterator(
-                thrust::counting_iterator<unsigned>(0),
-                PermuteRowOp(n, n, d_perm_vec)
+                thrust::counting_iterator<unsigned long long>(0),
+                PermuteRowOp((unsigned long long)n, (unsigned long long)n, d_perm_vec)
             )
         ),
-        n2*sizeof(DATA_TYPE),
+        n2,
         d_B_new_ptr
     );
 
@@ -1063,17 +1078,7 @@ void Kmeans::permute_kernel_mat(ClusterIter clusters,
     /* Set B pointer */
     CHECK_CUSPARSE_ERROR(cusparseDnMatSetValues(B_descr, d_B_new));
     std::swap(d_B, d_B_new);
-
 }
-
-
-
-
-
-
-
-
-
 
 
 

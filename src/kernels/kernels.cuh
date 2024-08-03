@@ -328,16 +328,16 @@ __global__ void compute_v_sparse_csc_permuted(DATA_TYPE * d_vals,
                                              int32_t * d_rowinds,
                                              int32_t * d_col_offsets,
                                              ClusterIter d_points_clusters,
-                                             const uint32_t * d_clusters_len,
-                                             uint32_t * d_clusters_offsets,
+                                             uint32_t * d_clusters_len,
+                                             uint32_t * d_perm_vec,
                                              const uint32_t n)
 {
     const int32_t tid = threadIdx.x + blockDim.x * blockIdx.x; 
     if (tid < n) {
-        const uint32_t cluster = d_points_clusters[tid];
-        unsigned int idx = atomicAdd(d_clusters_offsets + cluster, 1);
-        d_vals[idx] = ((DATA_TYPE) 1) / (DATA_TYPE)(d_clusters_len[cluster]);
-        d_rowinds[idx] = cluster;
+        unsigned int idx = d_perm_vec[tid];
+        const uint32_t cluster = d_points_clusters[idx];
+        d_vals[tid] = ((DATA_TYPE) 1) / (DATA_TYPE)(d_clusters_len[cluster]);
+        d_rowinds[tid] = cluster;
         d_col_offsets[tid] = tid;
     }
     d_col_offsets[n] = n;
@@ -365,6 +365,12 @@ __global__ void init_z(const uint32_t n, const uint32_t k,
                        const int32_t * V_rowinds,
                        DATA_TYPE * d_z_vals);
 
+__global__ void init_z_permuted(const uint32_t n, const uint32_t k,
+                               const DATA_TYPE * d_distances,
+                               const uint32_t * d_clusters,
+                               const int32_t * V_rowinds,
+                               const uint32_t * d_perm_vec,
+                               DATA_TYPE * d_z_vals);
 
 // Blocked ELLPACK
 // Each thread block should be responsible for points that live in a 2D partition of the 
@@ -524,6 +530,8 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
                                         cusparseDnMatDescr_t& D,
                                         cusparseDnVecDescr_t& c_tilde,
                                         cusparseDnVecDescr_t& z,
+                                        const uint32_t * d_perm_vec,
+                                        const int32_t * d_clusters,
                                         DATA_TYPE * d_distances);
 
 __global__ void scale_diag(DATA_TYPE * d_M, const uint32_t n, const DATA_TYPE alpha);

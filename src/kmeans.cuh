@@ -89,26 +89,27 @@ class Kmeans {
 	  }
 	};
 
-    struct PermuteRowOp : public thrust::unary_function<unsigned long, unsigned long>
+    //TODO: Remove unnecessary long longs
+    struct PermuteRowOp : public thrust::unary_function<unsigned long long, unsigned long long>
     {
-        PermuteRowOp(const uint32_t _rows,
-                     const uint32_t _cols,
+        PermuteRowOp(const unsigned long long _rows,
+                     const unsigned long long _cols,
                      uint32_t * _d_perm) :
             rows(_rows), cols(_cols), d_perm(_d_perm) 
         {}
 
         __host__ __device__
-        unsigned long operator()(unsigned idx)
+        unsigned long long operator()(unsigned long long idx)
         {
-            unsigned long i = idx / cols;
-            unsigned long new_i = d_perm[i];
-            unsigned long j = idx % cols;
+            unsigned long long i = idx / cols;
+            unsigned long long new_i = (unsigned long long)d_perm[i];
+            unsigned long long j = idx % cols;
             return (new_i*cols) + j;
         }
             
 
-        uint32_t rows;
-        uint32_t cols;
+        unsigned long long rows;
+        unsigned long long cols;
         uint32_t * d_perm;
 
     };
@@ -130,8 +131,10 @@ class Kmeans {
     uint64_t run(uint64_t maxiter, bool check_converged);
 
     template <typename ClusterIter>
-    void permute_kernel_mat(ClusterIter clusters,
-                                uint32_t * d_cluster_offsets);
+    void set_perm_vec(ClusterIter clusters,
+                      uint32_t * d_cluster_offsets);
+
+    void permute_kernel_mat();
 
     inline float get_score() const {return score;}
 
@@ -154,6 +157,7 @@ class Kmeans {
     DATA_TYPE* d_centroids;
     DATA_TYPE* d_centroids_row_norms;
     DATA_TYPE* d_z_vals;
+    int32_t* d_clusters;
 
     uint32_t * d_perm_vec;
 
