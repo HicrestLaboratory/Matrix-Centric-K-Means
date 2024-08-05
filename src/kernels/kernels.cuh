@@ -611,6 +611,11 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
     
 }
 
+__global__ void compute_kernel_matrix_naive(DATA_TYPE* d_K, 
+                                            const DATA_TYPE* d_P, 
+                                            const uint32_t n, 
+                                            const uint32_t d, 
+                                            const uint32_t d_closest_2_pow);
 
 
 __global__ void check_convergence( const DATA_TYPE * d_centroids,

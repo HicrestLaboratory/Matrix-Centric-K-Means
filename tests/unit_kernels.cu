@@ -25,7 +25,7 @@
 #include "../src/cuda_utils.cuh"
 #include "../src/include/common.h"
 
-#define TEST_DEBUG 1
+#define TEST_DEBUG 0
 #define WARP_SIZE  32
 
 template <typename IndexT, typename DataT>
@@ -39,7 +39,7 @@ struct KeyValueIndexOp {
 };
 
 const DATA_TYPE infty		= numeric_limits<DATA_TYPE>::infinity();
-const DATA_TYPE EPSILON = 1e-1;
+const DATA_TYPE EPSILON = 1e-3;
 
 cudaDeviceProp deviceProps;
 
@@ -53,6 +53,21 @@ void initRandomMatrixColMaj (DATA_TYPE* M, uint32_t rows, uint32_t cols) {
 			M[IDX2C(i, j, rows)] = ((int)trunc(std::rand() / 100000005.32)) % 6;
 		}
 	}
+}
+
+void write_mat_file(std::ofstream& out,
+                    DATA_TYPE * A,
+                    const uint32_t n,
+                    const uint32_t d,
+                    const std::string prefix)
+{
+    out<<prefix<<std::endl;
+    for (int i=0; i<n; i++) {
+        for (int j=0; j<d; j++) {
+            out<<A[j + i*d]<<",";
+        }
+        out<<std::endl;
+    }
 }
 
 /**
@@ -82,29 +97,44 @@ void computeCPUCentroidAssociatedMatrix (DATA_TYPE* A, DATA_TYPE* points, uint32
 	}
 }
 
-TEST_CASE("kernel_distances_matrix_arizona", "[kernel][distances]") { // FIXME does not work well with N >= 500
+TEST_CASE("kernel_kernel_mtx_naive", "[kernel][kernel]") { // FIXME does not work well with N >= 500
+    /*
 	const unsigned int TESTS_N = 9;
-	const unsigned int N[TESTS_N] = {10, 10, 17, 30, 17,	 15,	300,	2000, 100000};
-	const unsigned int D[TESTS_N] = { 1,	2,	3, 11, 42, 1500,	400,	 200, 64};
-	const unsigned int K[TESTS_N] = { 2,	6,	3, 11, 20,		5,	 10,	 200, 1000};
+	const unsigned int N[TESTS_N] = {10, 10, 17, 30, 17,	 15,	300,	2000};
+	const unsigned int D[TESTS_N] = { 1,	2,	3, 11, 42, 32,	64,	 200};
+	const unsigned int K[TESTS_N] = { 2,	6,	3, 11, 20,		5,	 10,	 200};
+    */
+	const unsigned int TESTS_N = 6;
+    const unsigned int N[TESTS_N] = {10, 30, 31, 107, 200, 10500};
+    const unsigned int D[TESTS_N] = {32, 64, 17, 42, 256, 16};
+    const unsigned int K[TESTS_N] = {2, 2, 2, 2, 2, 10};
 
 	getDeviceProps(0, &deviceProps);
+
+    cublasHandle_t cublasHandle;
+    cublasCreate(&cublasHandle);
+
 
 	for (int test_i = 0; test_i < TESTS_N ; ++test_i) {
 		const unsigned int n = N[test_i];
 		const unsigned int d = D[test_i];
 		const unsigned int k = K[test_i];
 
+        const unsigned int d_pow2 = pow(2, ceil(log2(d)));
+
 		char test_name[100];
-		sprintf(test_name, "kernel compute_distances_matrix_arizona n: %u	d: %u  k: %u", n, d, k);
+		sprintf(test_name, "kernel compute_kernel_mtx n: %u	d: %u  k: %u", n, d, k);
 		SECTION(test_name) {
 			printf("Test: %s\n", test_name);
 
+#if TEST_DEBUG
+            std::ofstream logfile;
+            logfile.open("logfile_kernel_" +std::to_string(test_i)+".out");
+            logfile<<"n:"<<n<<" d:"<<d<<" k:"<<k<<std::endl;
+#endif
+
 			DATA_TYPE *h_points = new DATA_TYPE[n * d];
 			DATA_TYPE *h_points_row_maj = new DATA_TYPE[n * d];
-			DATA_TYPE *h_centroids = new DATA_TYPE[k * d];
-			DATA_TYPE *h_centroids_row_maj = new DATA_TYPE[k * d];
-			DATA_TYPE *h_distances = new DATA_TYPE[n * k];
 
 			// Constructing P and C
 			initRandomMatrixColMaj(h_points, n, d);
@@ -114,199 +144,23 @@ TEST_CASE("kernel_distances_matrix_arizona", "[kernel][distances]") { // FIXME d
 				}
 			}
 
-			initRandomMatrixColMaj(h_centroids, k, d);
-            for (size_t i = 0; i<k; i++) {
-                for (size_t j = 0; j<d; j++) {
-                    h_centroids_row_maj[i*d + j] = h_centroids[IDX2C(i, j, k)];
-                }
-            }
-
-			if (TEST_DEBUG) {
-				printf("\nPOINTS %d:\n", n);
-				printMatrixColMajLimited(h_points, n, d, 10, 10);
-				printf("\nCENTERS %d:\n", k);
-				printMatrixColMajLimited(h_centroids, k, d, 10, 10);
-			}
+#if LOG
+            printf("\nPOINTS %d:\n", n);
+            printMatrixColMajLimited(h_points, n, d, 10, 10);
+#endif
 
 			DATA_TYPE* d_points;
 			cudaMalloc(&d_points, n * d * sizeof(DATA_TYPE));
 			cudaMemcpy(d_points, h_points_row_maj, n * d * sizeof(DATA_TYPE), cudaMemcpyHostToDevice);
+			DATA_TYPE* d_kernel;
+			cudaMalloc(&d_kernel, n * n * sizeof(DATA_TYPE));
 
-			DATA_TYPE* d_centroids;
-			cudaMalloc(&d_centroids, k * d * sizeof(DATA_TYPE));
-			cudaMemcpy(d_centroids, h_centroids_row_maj, k * d * sizeof(DATA_TYPE), cudaMemcpyHostToDevice);
+			DATA_TYPE* d_kernel_correct;
+			cudaMalloc(&d_kernel_correct, n * n * sizeof(DATA_TYPE));
 
-            DATA_TYPE * d_points_row_norms;
-            cudaMalloc(&d_points_row_norms, n*sizeof(DATA_TYPE));
-
-            DATA_TYPE * d_centroids_row_norms;
-            cudaMalloc(&d_centroids_row_norms, k*sizeof(DATA_TYPE));
-
-			DATA_TYPE* d_distances;
-			cudaMalloc(&d_distances, n * k * sizeof(DATA_TYPE));
-
-			cublasHandle_t cublasHandle;
-			cublasCreate(&cublasHandle);
-
-
-            raft::linalg::rowNorm(d_centroids_row_norms, d_centroids, d, k, raft::linalg::L2Norm, true, stream);
-
-            raft::linalg::rowNorm(d_points_row_norms, d_points, d, n, raft::linalg::L2Norm, true, stream);
-
-
-            compute_gemm_distances_arizona(cublasHandle,
-                                            d, n, k,
-                                            d_points, d_points_row_norms,
-                                            d_centroids, d_centroids_row_norms,
-                                            d_distances);
-            cudaDeviceSynchronize();
-			cudaMemcpy(h_distances, d_distances, n * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
-            
-            if (TEST_DEBUG) {
-                DATA_TYPE * h_norms_p = new DATA_TYPE[n];
-                DATA_TYPE * h_norms_c = new DATA_TYPE[k];
-
-                cudaMemcpy(h_norms_p, d_points_row_norms, sizeof(DATA_TYPE)*n, cudaMemcpyDeviceToHost);
-                cudaMemcpy(h_norms_c, d_centroids_row_norms, sizeof(DATA_TYPE)*k, cudaMemcpyDeviceToHost);
-                printf("NORM P\n");
-                printMatrixColMajLimited(h_norms_p, n, 1, 10, 10);
-                printf("NORM C\n");
-                printMatrixColMajLimited(h_norms_c, k, 1, 10, 10);
-
-
-                const DATA_TYPE alpha = -2.0;
-                const DATA_TYPE beta = 0.0;
-                
-                /* -2.0*P*C */
-                CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle,
-                                                CUBLAS_OP_T, CUBLAS_OP_N,
-                                                n, k, d,
-                                                &alpha,
-                                                d_points, d,
-                                                d_centroids, d,
-                                                &beta,
-                                                d_distances, n));
-                
-                DATA_TYPE * h_distances_tmp = new DATA_TYPE[n*k];
-                cudaMemcpy(h_distances_tmp, d_distances, sizeof(DATA_TYPE)*n*k, cudaMemcpyDeviceToHost);
-
-                printMatrixColMajLimited(h_distances_tmp, n, k, 10, 10);
-
-                /*
-                DATA_TYPE * h_P_debug = new DATA_TYPE[p_size];
-                cudaMemcpy(h_P_debug, d_P, p_size*sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
-
-                DATA_TYPE * h_C_debug = new DATA_TYPE[c_size];
-                cudaMemcpy(h_C_debug, d_C, c_size*sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
-
-                std::cout<<"P MATRIX"<<std::endl;
-                printMatrixColMajLimited(h_P_debug, p_rows, p_cols, 10, 10);
-
-                std::cout<<"C MATRIX"<<std::endl;
-                printMatrixColMajLimited(h_C_debug, c_rows, c_cols, 10, 10);
-
-                delete[] h_P_debug;
-                delete[] h_C_debug;
-                */
-            }
-	
-
-            if (TEST_DEBUG) {
-                std::cout<<"Computed distances"<<std::endl;
-                printMatrixColMajLimited(h_distances, n, k, 10, 10);
-            }
-
-			for (uint32_t ni = 0; ni < n; ++ni) {
-				for (uint32_t ki = 0; ki < k; ++ki) {
-					DATA_TYPE cpu_dist = 0, tmp;
-					for (uint32_t di = 0; di < d; ++di) {
-						tmp = h_points_row_maj[ni*d + di] - h_centroids_row_maj[ki*d + di];
-						cpu_dist += tmp * tmp;
-					}
-					DATA_TYPE gpu_dist = h_distances[ni*k + ki];
-					if (TEST_DEBUG && fabs(gpu_dist - cpu_dist) >= EPSILON) printf("point: %u center: %u gpu(%.6f) cpu(%.6f)\n", ni, ki, gpu_dist, cpu_dist);
-					REQUIRE( fabs(gpu_dist - cpu_dist) < EPSILON );
-				}
-			}
-
-			cublasDestroy(cublasHandle);
-			delete[] h_points;
-			delete[] h_points_row_maj;
-			delete[] h_centroids;
-            delete[] h_centroids_row_maj;
-			delete[] h_distances;
-			cudaFree(d_points);
-            cudaFree(d_centroids);
-			cudaFree(d_distances);
-            cudaFree(d_points_row_norms);
-            cudaFree(d_centroids_row_norms);
-		}
-	}
-
-	compute_gemm_distances_free();
-}
-
-
-
-TEST_CASE("kernel_distances_matrix_bellavita", "[kernel][distances]") { // FIXME does not work well with N >= 500
-	const unsigned int TESTS_N = 9;
-	const unsigned int N[TESTS_N] = {10, 10, 17, 30, 17,	 15,	300,	2000, 1000};
-	const unsigned int D[TESTS_N] = { 2,	2,	3, 11, 42, 1500,	400,	 200, 64};
-	const unsigned int K[TESTS_N] = { 2,	6,	3, 11, 20,		5,	 10,	 200, 1000};
-
-	getDeviceProps(0, &deviceProps);
-
-	for (int test_i = 0; test_i < TESTS_N ; ++test_i) {
-		const unsigned int n = N[test_i];
-		const unsigned int d = D[test_i];
-		const unsigned int k = K[test_i];
-
-		char test_name[100];
-		sprintf(test_name, "kernel compute_distances_matrix_bellavita n: %u	d: %u  k: %u", n, d, k);
-		SECTION(test_name) {
-			printf("Test: %s\n", test_name);
-
-			DATA_TYPE *h_points = new DATA_TYPE[n * d];
-			DATA_TYPE *h_points_row_maj = new DATA_TYPE[n * d];
-			DATA_TYPE *h_centroids = new DATA_TYPE[k * d];
-			DATA_TYPE *h_centroids_row_maj = new DATA_TYPE[k * d];
-			DATA_TYPE *h_distances = new DATA_TYPE[n * k];
-
-			// Constructing P and C
-			initRandomMatrixColMaj(h_points, n, d);
-			for (size_t i = 0; i < n; i++) {
-				for (size_t j = 0; j < d; j++) {
-					h_points_row_maj[i * d + j] = h_points[IDX2C(i, j, n)];
-				}
-			}
-
-
-			DATA_TYPE* d_points;
-			cudaMalloc(&d_points, n * d * sizeof(DATA_TYPE));
-			cudaMemcpy(d_points, h_points_row_maj, n * d * sizeof(DATA_TYPE), cudaMemcpyHostToDevice);
-
-			DATA_TYPE* d_centroids;
-			cudaMalloc(&d_centroids, k * d * sizeof(DATA_TYPE));
-
-            DATA_TYPE * d_points_row_norms;
-            cudaMalloc(&d_points_row_norms, n*sizeof(DATA_TYPE));
-
-            DATA_TYPE * d_centroids_row_norms;
-            cudaMalloc(&d_centroids_row_norms, k*sizeof(DATA_TYPE));
-
-			DATA_TYPE* d_distances;
-			cudaMalloc(&d_distances, n * k * sizeof(DATA_TYPE));
-
-            DATA_TYPE* d_B;
-            cudaMalloc(&d_B, n*n*sizeof(DATA_TYPE));
-
-
-			cublasHandle_t cublasHandle;
-			cublasCreate(&cublasHandle);
-
-            /* Init B */
-            float b_alpha = -2.0;
-            float b_beta = 0.0;
+            DATA_TYPE b_beta = 0.0;
+            DATA_TYPE b_alpha = 1.0;
+            auto stime_gemm = std::chrono::high_resolution_clock::now();
             CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle, 
                                             CUBLAS_OP_T,
                                             CUBLAS_OP_N,
@@ -315,244 +169,52 @@ TEST_CASE("kernel_distances_matrix_bellavita", "[kernel][distances]") { // FIXME
                                             d_points, d,
                                             d_points, d,
                                             &b_beta,
-                                            d_B, n));
-
+                                            d_kernel_correct, n));
             CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+            auto etime_gemm = std::chrono::high_resolution_clock::now();
+            auto duration_gemm = std::chrono::duration_cast<std::chrono::duration<double>>(etime_gemm- stime_gemm).count();
+            std::cout<<"GEMM: "<<duration_gemm<<"s"<<std::endl;
 
-            cusparseHandle_t cusparseHandle;
-            cusparseCreate(&cusparseHandle);
-
-            /* Init random V */
-            DATA_TYPE * d_V_vals;
-            int32_t * d_V_rowinds;
-            int32_t * d_V_col_offsets;
-
-            CHECK_CUDA_ERROR(cudaMalloc(&d_V_vals, sizeof(DATA_TYPE)*n));
-            CHECK_CUDA_ERROR(cudaMalloc(&d_V_rowinds, sizeof(int32_t)*n));
-            CHECK_CUDA_ERROR(cudaMalloc(&d_V_col_offsets, sizeof(int32_t)*(n+1)));
-
-            std::vector<uint32_t> h_clusters_rand(n);
-            std::generate(std::begin(h_clusters_rand), 
-                          std::end(h_clusters_rand),
-                          [k]()
-                          { 
-                            auto c = std::rand() % k;
-                            return c;
-                          });
-
-            std::vector<uint32_t> h_clusters_len(k);
-            std::for_each(h_clusters_rand.begin(),
-                          h_clusters_rand.end(),
-                          [&h_clusters_len](auto cluster)mutable
-                          {
-                              h_clusters_len[cluster]++;
-                          });
+            const uint32_t tpb = 512;
+            const uint32_t wpb = tpb / 32;
+            const uint64_t blocks = ceil((double)(n*n) / (double)wpb);
+            auto stime_naive = std::chrono::high_resolution_clock::now();
+            compute_kernel_matrix_naive<<<blocks, tpb>>>(d_kernel, d_points, n, d, d_pow2);
+            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+            auto etime_naive = std::chrono::high_resolution_clock::now();
+            auto duration_naive = std::chrono::duration_cast<std::chrono::duration<double>>(etime_naive - stime_naive).count();
+            std::cout<<"NAIVE: "<<duration_naive<<"s"<<std::endl;
 
 
-            uint32_t * d_clusters;
-            uint32_t * d_clusters_len;
-            cudaMalloc(&d_clusters, sizeof(uint32_t)*n);
-            cudaMalloc(&d_clusters_len, sizeof(uint32_t)*k);
-            cudaMemcpy(d_clusters, h_clusters_rand.data(),
-                        sizeof(uint32_t)*n,
-                        cudaMemcpyHostToDevice);
-            cudaMemcpy(d_clusters_len, h_clusters_len.data(),
-                        sizeof(uint32_t)*k,
-                        cudaMemcpyHostToDevice);
+            DATA_TYPE * h_correct = new DATA_TYPE[n*n];
+            DATA_TYPE * h_computed = new DATA_TYPE[n*n];
+            cudaMemcpy(h_correct, d_kernel_correct, sizeof(DATA_TYPE)*n*n, cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_computed, d_kernel, sizeof(DATA_TYPE)*n*n, cudaMemcpyDeviceToHost);
 
-
-            const uint32_t v_mat_block_dim = min((size_t)n, (size_t)deviceProps.maxThreadsPerBlock);
-            const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
-
-            compute_v_sparse<<<v_mat_grid_dim, v_mat_block_dim>>>(d_V_vals, 
-                                                                  d_V_rowinds, 
-                                                                  d_V_col_offsets, 
-                                                                  d_clusters, 
-                                                                  d_clusters_len,
-                                                                  n);
-
-
-            /* Init cusparse descriptors */
-
-            cusparseSpMatDescr_t V_descr;
-            cusparseDnMatDescr_t P_descr;
-            cusparseDnMatDescr_t B_descr;
-            cusparseDnMatDescr_t D_descr;
-            cusparseDnMatDescr_t C_descr;
-
-            CHECK_CUSPARSE_ERROR(cusparseCreateCsc(&V_descr,
-                                                    k, n, n,
-                                                    d_V_col_offsets,
-                                                    d_V_rowinds,
-                                                    d_V_vals,
-                                                    CUSPARSE_INDEX_32I,
-                                                    CUSPARSE_INDEX_32I,
-                                                    CUSPARSE_INDEX_BASE_ZERO,
-                                                    CUDA_R_32F));
-
-            CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&P_descr,
-                                                      n, d, d,
-                                                      d_points,
-                                                      CUDA_R_32F,
-                                                      CUSPARSE_ORDER_ROW));
-
-            CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&B_descr,
-                                                    n, n, n,
-                                                    d_B,
-                                                    CUDA_R_32F,
-                                                    CUSPARSE_ORDER_ROW));
-
-            CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&D_descr,
-                                                     k, n, k,
-                                                     d_distances,
-                                                     CUDA_R_32F,
-                                                     CUSPARSE_ORDER_COL));
-
-            CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&C_descr,
-                                                      k, d, d,
-                                                      d_centroids,
-                                                      CUDA_R_32F,
-                                                      CUSPARSE_ORDER_ROW));
-
-
-            /* Construct C with random V and copy it to host centroids */
-            compute_centroids_spmm(cusparseHandle,
-                                    d, n, k,
-                                    d_V_vals, 
-                                    d_V_rowinds,
-                                    d_V_col_offsets,
-                                    d_centroids,
-                                    V_descr,
-                                    P_descr,
-                                    C_descr);
-            cudaMemcpy(h_centroids_row_maj, d_centroids, sizeof(DATA_TYPE)*k*d,
-                        cudaMemcpyDeviceToHost);
-
-			if (TEST_DEBUG) {
-				printf("\nPOINTS %d:\n", n);
-				printMatrixColMajLimited(h_points, n, d, 10, 10);
-
-                for (int i=0; i<d; i++) {
-                    for (int j=0; j<k; j++) {
-                        h_centroids[j + i*k] = h_centroids_row_maj[i + j*d];
-                    }
-                }
-
-				printf("\nCENTERS %d:\n", k);
-				printMatrixColMajLimited(h_centroids, k, d, 10, 10);
-			}
-
-
-            raft::linalg::rowNorm(d_centroids_row_norms, d_centroids, d, k, raft::linalg::L2Norm, true, stream);
-
-            raft::linalg::rowNorm(d_points_row_norms, d_points, d, n, raft::linalg::L2Norm, true, stream);
-
-
-            compute_gemm_distances_bellavita(cusparseHandle,
-                                            d, n, k,
-                                            d_points_row_norms,
-                                            d_centroids_row_norms,
-                                            B_descr, V_descr,
-                                            D_descr,
-                                            d_distances);
-            cudaDeviceSynchronize();
-
-			cudaMemcpy(h_distances, d_distances, n * k * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
-            
-            if (TEST_DEBUG) {
-                DATA_TYPE * h_norms_p = new DATA_TYPE[n];
-                DATA_TYPE * h_norms_c = new DATA_TYPE[k];
-
-                cudaMemcpy(h_norms_p, d_points_row_norms, sizeof(DATA_TYPE)*n, cudaMemcpyDeviceToHost);
-                cudaMemcpy(h_norms_c, d_centroids_row_norms, sizeof(DATA_TYPE)*k, cudaMemcpyDeviceToHost);
-
-
-                const DATA_TYPE alpha = -2.0;
-                const DATA_TYPE beta = 0.0;
-                
-                /* -2.0*P*C */
-                CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle,
-                                                CUBLAS_OP_T, CUBLAS_OP_N,
-                                                n, k, d,
-                                                &alpha,
-                                                d_points, d,
-                                                d_centroids, d,
-                                                &beta,
-                                                d_distances, n));
-                
-                DATA_TYPE * h_distances_tmp = new DATA_TYPE[n*k];
-                cudaMemcpy(h_distances_tmp, d_distances, sizeof(DATA_TYPE)*n*k, cudaMemcpyDeviceToHost);
-
-                printMatrixColMajLimited(h_distances_tmp, n, k, 10, 10);
-
-                /*
-                DATA_TYPE * h_P_debug = new DATA_TYPE[p_size];
-                cudaMemcpy(h_P_debug, d_P, p_size*sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
-
-                DATA_TYPE * h_C_debug = new DATA_TYPE[c_size];
-                cudaMemcpy(h_C_debug, d_C, c_size*sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
-
-                std::cout<<"P MATRIX"<<std::endl;
-                printMatrixColMajLimited(h_P_debug, p_rows, p_cols, 10, 10);
-
-                std::cout<<"C MATRIX"<<std::endl;
-                printMatrixColMajLimited(h_C_debug, c_rows, c_cols, 10, 10);
-
-                delete[] h_P_debug;
-                delete[] h_C_debug;
-                */
-            }
-	
-
-            if (TEST_DEBUG) {
-                std::cout<<"Computed distances"<<std::endl;
-                printMatrixColMajLimited(h_distances, n, k, 10, 10);
-            }
+#if TEST_DEBUG
+            write_mat_file(logfile, h_correct, n, n, "CORRECT");
+            write_mat_file(logfile, h_computed, n, n, "COMPUTED");
+#endif
 
 			for (uint32_t ni = 0; ni < n; ++ni) {
-				for (uint32_t ki = 0; ki < k; ++ki) {
-					DATA_TYPE cpu_dist = 0, tmp;
-					for (uint32_t di = 0; di < d; ++di) {
-						tmp = h_points_row_maj[di + ni*d] - h_centroids_row_maj[di + ki*d];
-						cpu_dist += tmp * tmp;
-					}
-					DATA_TYPE gpu_dist = h_distances[ki + ni*k];
-					if (TEST_DEBUG && fabs(gpu_dist - cpu_dist) >= EPSILON) printf("point: %u center: %u gpu(%.6f) cpu(%.6f)\n", ni, ki, gpu_dist, cpu_dist);
-					REQUIRE( fabs(gpu_dist - cpu_dist) < EPSILON );
+				for (uint32_t ni2 = 0; ni2 < n; ++ni2) {
+					REQUIRE( fabs(h_correct[ni2 + ni*n] - h_computed[ni2 + ni*n] ) < EPSILON );
 				}
 			}
 
 			cublasDestroy(cublasHandle);
-
 			delete[] h_points;
 			delete[] h_points_row_maj;
-			delete[] h_centroids;
-            delete[] h_centroids_row_maj;
-			delete[] h_distances;
-
+            delete[] h_correct;
+            delete[] h_computed;
 			cudaFree(d_points);
-            cudaFree(d_centroids);
-			cudaFree(d_distances);
-            cudaFree(d_points_row_norms);
-            cudaFree(d_centroids_row_norms);
-            cudaFree(d_clusters);
-            cudaFree(d_clusters_len);
-            cudaFree(d_V_vals);
-            cudaFree(d_V_rowinds);
-            cudaFree(d_V_col_offsets);
-            cudaFree(d_B);
-
-            cusparseDestroyDnMat(P_descr); 
-            cusparseDestroyDnMat(C_descr); 
-            cusparseDestroyDnMat(B_descr); 
-            cusparseDestroyDnMat(D_descr); 
-            cusparseDestroySpMat(V_descr); 
-
-            cusparseDestroy(cusparseHandle);
+			cudaFree(d_kernel);
+#if TEST_DEBUG
+            logfile.close();
+#endif
 		}
 	}
 
-	compute_gemm_distances_free();
 }
 
 
@@ -678,158 +340,4 @@ TEST_CASE("kernel_argmin", "[kernel][argmin]") {
 	}
 }
 
-
-
-TEST_CASE("kernel_centroids_spmm", "[kernel][centroids]") {
-	#define TESTS_N 8
-	const unsigned int D[TESTS_N] = {2,  3,  10,	32,  50,	100, 1000, 1024};
-	const unsigned int N[TESTS_N] = {2, 10, 100,	51, 159, 1000, 3456, 10056};
-	const unsigned int K[TESTS_N] = {1,  4,		7,	10, 129,	997, 1023, 1024};
-
-	getDeviceProps(0, &deviceProps);
-
-	for (int d_idx = 0; d_idx < TESTS_N; ++d_idx) {
-		for (int n_idx = 0; n_idx < TESTS_N; ++n_idx) {
-			for (int k_idx = 0; k_idx < TESTS_N; ++k_idx) {
-				const unsigned int d = D[d_idx];
-				const unsigned int n = N[n_idx];
-				const unsigned int k = K[k_idx];
-				char test_name[50];
-
-				snprintf(test_name, 49, "kernel centroids spmm d=%u n=%u k=%u", d, n, k);
-
-				SECTION(test_name) {
-					printf("Test: %s\n", test_name);
-					DATA_TYPE *h_centroids = new DATA_TYPE[k * d];
-					DATA_TYPE *h_points = new DATA_TYPE[n * d];
-					uint32_t	*h_points_clusters = new uint32_t[n];
-					uint32_t	*h_clusters_len = new uint32_t[k];
-
-					memset(h_clusters_len, 0, k * sizeof(uint32_t));
-					for (uint32_t i = 0; i < n; ++i) {
-						h_points_clusters[i] = (static_cast <uint32_t> (std::rand() % k));
-						h_clusters_len[h_points_clusters[i]]++;
-						for (uint32_t j = 0; j < d; ++j) {
-							h_points[i * d + j] = (static_cast <DATA_TYPE> (std::rand() / 1000.0)) / 1000.00;
-						}
-					}
-
-					memset(h_centroids, 0, k * d * sizeof(DATA_TYPE));
-					for (uint32_t i = 0; i < n; ++i) {
-						for (uint32_t j = 0; j < d; ++j) {
-							h_centroids[h_points_clusters[i] * d + j] += h_points[i * d + j];
-						}
-					}
-
-					for (uint32_t i = 0; i < k; ++i) {
-						for (uint32_t j = 0; j < d; ++j) {
-							uint64_t count = h_clusters_len[i] > 1 ? h_clusters_len[i] : 1;
-							DATA_TYPE scale = 1.0 / ((double) count);
-							h_centroids[i * d + j] *= scale;
-						}
-					}
-
-
-					DATA_TYPE* d_centroids;
-					CHECK_CUDA_ERROR(cudaMalloc(&d_centroids, k * d * sizeof(DATA_TYPE)));
-					DATA_TYPE* d_points;
-					CHECK_CUDA_ERROR(cudaMalloc(&d_points, n * d * sizeof(DATA_TYPE)));
-					CHECK_CUDA_ERROR(cudaMemcpy(d_points, h_points, n * d * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
-					uint32_t* d_points_clusters;
-					CHECK_CUDA_ERROR(cudaMalloc(&d_points_clusters, n * sizeof(uint32_t)));
-					CHECK_CUDA_ERROR(cudaMemcpy(d_points_clusters, h_points_clusters, n * sizeof(uint32_t), cudaMemcpyHostToDevice));
-					uint32_t* d_clusters_len;
-					CHECK_CUDA_ERROR(cudaMalloc(&d_clusters_len, k * sizeof(uint32_t)));
-					CHECK_CUDA_ERROR(cudaMemcpy(d_clusters_len, h_clusters_len, k * sizeof(uint32_t), cudaMemcpyHostToDevice));
-
-
-                    DATA_TYPE * d_V_vals;
-                    int32_t * d_V_rowinds;
-                    int32_t * d_V_col_offsets;
-
-                    cudaMalloc(&d_V_vals, n * sizeof(DATA_TYPE));
-                    cudaMalloc(&d_V_rowinds, n * sizeof(int32_t));
-                    cudaMalloc(&d_V_col_offsets, (n+1) * sizeof(int32_t));
-
-					
-					cusparseSpMatDescr_t V_descr;
-					cusparseDnMatDescr_t P_descr;                                                              cusparseDnMatDescr_t C_descr;
-
-					CHECK_CUSPARSE_ERROR(cusparseCreateCsc(&V_descr,
-															k, n, n,
-															d_V_col_offsets,
-															d_V_rowinds,
-															d_V_vals,
-															CUSPARSE_INDEX_32I,                                                                        CUSPARSE_INDEX_32I,
-															CUSPARSE_INDEX_BASE_ZERO,
-															CUDA_R_32F));
-					
-					
-					CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&P_descr,
-															  n, d, d,
-															  d_points,
-															  CUDA_R_32F,
-															  CUSPARSE_ORDER_ROW));
-
-					CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&C_descr,
-															  k, d, d,
-															  d_centroids,
-															  CUDA_R_32F,
-															  CUSPARSE_ORDER_ROW));
-
-
-
-                    uint32_t v_mat_block_dim = min((uint32_t)n, (uint32_t)deviceProps.maxThreadsPerBlock);
-                    uint32_t v_mat_grid_dim = ceil((float)n/(float)v_mat_block_dim);
-
-                    compute_v_sparse<<<v_mat_grid_dim, v_mat_block_dim>>>
-                                    (d_V_vals, d_V_rowinds, d_V_col_offsets,
-                                     d_points_clusters,
-                                     d_clusters_len,
-                                     n);
-
-                    cusparseHandle_t handle;
-                    cusparseCreate(&handle);
-
-                    compute_centroids_spmm(handle, 
-                                            d, n, k,
-                                            d_V_vals, 
-                                            d_V_rowinds,
-                                            d_V_col_offsets,
-                                            d_centroids,
-				                            V_descr,
-                                            P_descr,
-                                            C_descr);
-                                                                            
-
-					CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-					CHECK_LAST_CUDA_ERROR();
-                    
-					DATA_TYPE *h_centroids_cpy = new DATA_TYPE[k * d];
-					CHECK_CUDA_ERROR(cudaMemcpy(h_centroids_cpy, d_centroids, k * d * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
-                    
-
-					const DATA_TYPE EPSILON = numeric_limits<DATA_TYPE>::round_error();
-					bool is_equal = true;
-					for (uint32_t i = 0; i < k; ++i) {
-						for (uint32_t j = 0; j < d; ++j) {
-							is_equal &= fabs(h_centroids[i * d + j] - h_centroids_cpy[i * d + j]) < EPSILON;
-						}
-					}
-
-					delete[] h_centroids;
-					delete[] h_centroids_cpy;
-					delete[] h_points;
-					delete[] h_points_clusters;
-					delete[] h_clusters_len;
-					cudaFree(d_centroids);
-					cudaFree(d_points);
-					cudaFree(d_clusters_len);
-
-					REQUIRE(is_equal);
-				}
-			}
-		}
-	}
-}
 

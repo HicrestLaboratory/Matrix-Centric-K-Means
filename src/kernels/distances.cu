@@ -770,6 +770,7 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
 
     CHECK_CUDA_ERROR(cudaFree(d_buff));
 
+    /*
     std::ofstream kvt_out;
     kvt_out.open("kvt_out.out");
     std::vector<DATA_TYPE> h_kvt(n*k);
@@ -782,6 +783,7 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
         kvt_out<<std::endl;
     }
     kvt_out.close();
+    */
 
 
 
@@ -857,11 +859,13 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
                                             d_distances);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
+    /*
     std::vector<DATA_TYPE> h_c_tilde(k);
     cudaMemcpy(h_c_tilde.data(), d_c_norms, sizeof(DATA_TYPE)*k, cudaMemcpyDeviceToHost);
 
     std::for_each(h_c_tilde.begin(), h_c_tilde.end(), [](auto const& elem ){std::cout<<elem<<",";});
     std::cout<<std::endl;
+    */
 
 }
 
@@ -927,6 +931,52 @@ __global__ void linear(const uint32_t n,
         d_B[tid] *= -2.0;
     }
 }
+
+
+__global__ void compute_kernel_matrix_naive(DATA_TYPE* d_K, 
+                                            const DATA_TYPE* d_P, 
+                                            const uint32_t n, 
+                                            const uint32_t d, 
+                                            const uint32_t d_closest_2_pow)
+{
+    using WarpReduce = cub::WarpReduce<DATA_TYPE>;
+    __shared__ typename WarpReduce::TempStorage temp_storage;
+
+    const uint32_t lane_id = threadIdx.x % warpSize;
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+
+    const uint32_t tpb = blockDim.x;
+    const uint32_t wpb = tpb / warpSize;
+    const uint32_t wid = tid / warpSize;
+
+	const uint32_t point_id_x = (wid % n);
+	const uint32_t point_id_y = (wid / n);
+
+    const uint32_t offset_x = d * point_id_x + lane_id;
+    const uint32_t offset_y = d * point_id_y + lane_id;
+
+    DATA_TYPE result = 0;
+
+    for (int j=0; j<d_closest_2_pow; j+=warpSize) {
+        DATA_TYPE reg = (lane_id + j < d && point_id_x < n && point_id_y < n) ? 
+                         d_P[offset_x + j] * d_P[offset_y + j] : 0;
+        //DATA_TYPE reg = d_P[offset_x + j] * d_P[offset_y + j] ;
+        result += WarpReduce(temp_storage).Sum(reg);
+    }
+
+    __syncthreads();
+
+    if (lane_id == 0 && point_id_y < n) {
+        d_K[point_id_y + point_id_x*n] = result;
+    }
+}
+
+
+
+
+
+
+
 
 
 
