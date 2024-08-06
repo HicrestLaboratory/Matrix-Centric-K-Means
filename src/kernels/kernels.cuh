@@ -345,7 +345,7 @@ __global__ void compute_v_sparse_csc_permuted(DATA_TYPE * d_vals,
 
 
 template <typename ClusterIter>
-__global__ void compute_perm_vec(uint32_t * d_p,
+__global__ void compute_perm_vec(uint32_t * d_perm_vec,
                                  ClusterIter d_points_clusters,
                                  uint32_t * d_clusters_offsets,
                                  const uint32_t n)
@@ -354,7 +354,7 @@ __global__ void compute_perm_vec(uint32_t * d_p,
     if (tid < n) {
         const uint32_t cluster = d_points_clusters[tid];
         unsigned int idx = atomicAdd(d_clusters_offsets + cluster, 1);
-        d_p[idx] = tid;
+        d_perm_vec[idx] = tid;
     }
 }
 
@@ -617,6 +617,24 @@ __global__ void compute_kernel_matrix_naive(DATA_TYPE* d_K,
                                             const uint32_t d, 
                                             const uint32_t d_closest_2_pow);
 
+__global__ void sum_points(const DATA_TYPE * d_K,
+                            const uint32_t * d_clusters,
+                            const uint32_t * d_clusters_len,
+                            DATA_TYPE * d_distances,
+                            const uint32_t n, const uint32_t k,
+                            const uint32_t n_thread_ceil);
+
+__global__ void sum_centroids(const DATA_TYPE * d_K,
+                            const uint32_t * d_clusters,
+                            const uint32_t * d_clusters_len,
+                            DATA_TYPE * d_centroids,
+                            const uint32_t n, const uint32_t k);
+
+__global__ void compute_distances_naive(const DATA_TYPE * d_K,
+                                        const DATA_TYPE * d_centroids,
+                                        const DATA_TYPE * d_tmp,
+                                        DATA_TYPE * d_distances,
+                                        const uint32_t n, const uint32_t k);
 
 __global__ void check_convergence( const DATA_TYPE * d_centroids,
                                     const DATA_TYPE * d_last_centroids,

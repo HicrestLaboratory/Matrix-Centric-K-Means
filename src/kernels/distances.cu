@@ -933,8 +933,8 @@ __global__ void linear(const uint32_t n,
 }
 
 
-__global__ void compute_kernel_matrix_naive(DATA_TYPE* d_K, 
-                                            const DATA_TYPE* d_P, 
+__global__ void compute_kernel_matrix_naive(DATA_TYPE * d_K, 
+                                            const DATA_TYPE * d_P, 
                                             const uint32_t n, 
                                             const uint32_t d, 
                                             const uint32_t d_closest_2_pow)
@@ -960,7 +960,6 @@ __global__ void compute_kernel_matrix_naive(DATA_TYPE* d_K,
     for (int j=0; j<d_closest_2_pow; j+=warpSize) {
         DATA_TYPE reg = (lane_id + j < d && point_id_x < n && point_id_y < n) ? 
                          d_P[offset_x + j] * d_P[offset_y + j] : 0;
-        //DATA_TYPE reg = d_P[offset_x + j] * d_P[offset_y + j] ;
         result += WarpReduce(temp_storage).Sum(reg);
     }
 
@@ -972,11 +971,89 @@ __global__ void compute_kernel_matrix_naive(DATA_TYPE* d_K,
 }
 
 
+__global__ void sum_points(const DATA_TYPE * d_K,
+                            const uint32_t * d_clusters,
+                            const uint32_t * d_clusters_len,
+                            DATA_TYPE * d_distances,
+                            const uint32_t n, const uint32_t k,
+                            const uint32_t n_thread_ceil)
+{
+    const uint64_t point_id = blockIdx.x;
+
+    extern __shared__ DATA_TYPE point_sums[];
+    if (threadIdx.x < k) {
+        point_sums[threadIdx.x] = 0;
+    }
+
+    __syncthreads();
+
+    /* Reduce all inner products in the same cluster */
+    for (int j=threadIdx.x; j<n_thread_ceil; j += blockDim.x) {
+        if (j<n) {
+            const uint32_t cluster = d_clusters[j];
+            const DATA_TYPE thread_data = d_K[point_id * n + j];
+            atomicAdd(point_sums + cluster, thread_data / d_clusters_len[cluster]); 
+        }
+    }
+
+    __syncthreads();
+
+    /* Write result */
+    if (threadIdx.x < k) {
+        d_distances[point_id * k + threadIdx.x] = point_sums[threadIdx.x];
+    }
+
+}
 
 
+__global__ void sum_centroids(const DATA_TYPE * d_K,
+                            const uint32_t * d_clusters,
+                            const uint32_t * d_clusters_len,
+                            DATA_TYPE * d_centroids,
+                            const uint32_t n, const uint32_t k)
+{
+
+    const uint32_t tid = blockDim.x * blockIdx.x + threadIdx.x;
+    const uint32_t i = tid / n;
+    const uint32_t j = tid % n;
+
+    extern __shared__ DATA_TYPE centroid_sums[];
+    if (threadIdx.x < k) {
+        centroid_sums[threadIdx.x] = 0;
+    }
+
+    __syncthreads();
+
+    /* Intra-block reduction */
+    if (i < n) {
+        const uint32_t cluster_i = d_clusters[i];
+        const uint32_t cluster_j = d_clusters[j];
+        DATA_TYPE thread_data = (cluster_i == cluster_j) ? d_K[j + i*n] : 0;
+        atomicAdd(centroid_sums + cluster_i, (thread_data / (double)pow(d_clusters_len[cluster_i], 2)));
+    }
+
+    __syncthreads();
+
+    /* Reduce to global mem */
+    if (threadIdx.x < k) {
+        atomicAdd(d_centroids + threadIdx.x, centroid_sums[threadIdx.x]);
+    }
+
+}
 
 
-
+__global__ void compute_distances_naive(const DATA_TYPE * d_K,
+                                        const DATA_TYPE * d_centroids,
+                                        const DATA_TYPE * d_tmp,
+                                        DATA_TYPE * d_distances,
+                                        const uint32_t n, const uint32_t k)
+{
+    const uint32_t tid = blockDim.x * blockIdx.x + threadIdx.x;
+    const uint32_t i = tid / k;
+    const uint32_t j = tid % k;
+    if (tid < n*k)
+        d_distances[j + i*k] = -2*d_tmp[j + i*k] + d_K[i + i*n] + d_centroids[j];
+}
 
 
 

@@ -217,6 +217,220 @@ TEST_CASE("kernel_kernel_mtx_naive", "[kernel][kernel]") { // FIXME does not wor
 
 }
 
+TEST_CASE("kernel_compute_distances_naive", "[kernel][kernel]") { // FIXME does not work well with N >= 500
+    /*
+	const unsigned int TESTS_N = 9;
+	const unsigned int N[TESTS_N] = {10, 10, 17, 30, 17,	 15,	300,	2000};
+	const unsigned int D[TESTS_N] = { 1,	2,	3, 11, 42, 32,	64,	 200};
+	const unsigned int K[TESTS_N] = { 2,	6,	3, 11, 20,		5,	 10,	 200};
+    */
+	const unsigned int TESTS_N = 6;
+    const unsigned int N[TESTS_N] = {10, 30, 31, 107, 200, 10500};
+    const unsigned int D[TESTS_N] = {32, 64, 17, 42, 256, 16};
+    const unsigned int K[TESTS_N] = {2, 4, 6, 10, 100, 10};
+
+	getDeviceProps(0, &deviceProps);
+
+    cublasHandle_t cublasHandle;
+    cublasCreate(&cublasHandle);
+
+
+	for (int test_i = 0; test_i < 6; ++test_i) {
+		const unsigned int n = N[test_i];
+		const unsigned int d = D[test_i];
+		const unsigned int k = K[test_i];
+
+        const unsigned int d_pow2 = pow(2, ceil(log2(d)));
+
+		char test_name[100];
+		sprintf(test_name, "kernel compute_distances_naive n: %u	d: %u  k: %u", n, d, k);
+		SECTION(test_name) {
+			printf("Test: %s\n", test_name);
+
+#if TEST_DEBUG
+            std::ofstream logfile;
+            logfile.open("logfile_kernel_" +std::to_string(test_i)+".out");
+            logfile<<"n:"<<n<<" d:"<<d<<" k:"<<k<<std::endl;
+#endif
+
+			DATA_TYPE * h_points = new DATA_TYPE[n * d];
+			DATA_TYPE * h_points_row_maj = new DATA_TYPE[n * d];
+			DATA_TYPE * h_kernel = new DATA_TYPE[n * n];
+            DATA_TYPE * h_tmp = new DATA_TYPE[n*k];
+            DATA_TYPE * h_distances_correct = new DATA_TYPE[n*k];
+            DATA_TYPE * h_distances_computed = new DATA_TYPE[n*k];
+            std::memset(h_tmp, 0, sizeof(DATA_TYPE)*n*k);
+            std::memset(h_distances_correct, 0, sizeof(DATA_TYPE)*n*k);
+
+			initRandomMatrixColMaj(h_points, n, d);
+			for (size_t i = 0; i < n; i++) {
+				for (size_t j = 0; j < d; j++) {
+					h_points_row_maj[i * d + j] = h_points[IDX2C(i, j, n)];
+				}
+			}
+
+            std::random_device rd;
+            std::mt19937 gen(rd());
+            std::uniform_int_distribution<uint32_t> distr(0, k-1);
+
+            std::vector<uint32_t> h_clusters(n);
+            for (int i=0; i<n; i++) {
+                h_clusters[i] = i % k;
+            }
+
+            std::vector<uint32_t> h_clusters_len(k);
+            std::for_each(h_clusters.begin(), h_clusters.end(), 
+                            [&](auto const& cluster)mutable {h_clusters_len[cluster] += 1;});
+
+            uint32_t * d_clusters;
+            cudaMalloc(&d_clusters, sizeof(uint32_t)*n);
+            cudaMemcpy(d_clusters, h_clusters.data(), sizeof(uint32_t)*n,
+                            cudaMemcpyHostToDevice);
+
+            uint32_t * d_clusters_len;
+            cudaMalloc(&d_clusters_len, sizeof(uint32_t)*k);
+            cudaMemcpy(d_clusters_len, h_clusters_len.data(), sizeof(uint32_t)*k,
+                            cudaMemcpyHostToDevice);
+
+			DATA_TYPE * d_kernel;
+			cudaMalloc(&d_kernel, n * n * sizeof(DATA_TYPE));
+
+            DATA_TYPE * d_points;
+            cudaMalloc(&d_points, n*d*sizeof(DATA_TYPE));
+            cudaMemcpy(d_points, h_points_row_maj, sizeof(DATA_TYPE)*n*d,
+                            cudaMemcpyHostToDevice);
+
+            DATA_TYPE b_beta = 0.0;
+            DATA_TYPE b_alpha = 1.0;
+            CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle, 
+                                            CUBLAS_OP_T,
+                                            CUBLAS_OP_N,
+                                            n, n, d,
+                                            &b_alpha,
+                                            d_points, d,
+                                            d_points, d,
+                                            &b_beta,
+                                            d_kernel, n));
+            cudaMemcpy(h_kernel, d_kernel, sizeof(DATA_TYPE)*n*n,
+                        cudaMemcpyDeviceToHost);
+
+            DATA_TYPE * d_distances;
+			cudaMalloc(&d_distances, n * k * sizeof(DATA_TYPE));
+
+            DATA_TYPE * d_tmp;
+			cudaMalloc(&d_tmp, n * k * sizeof(DATA_TYPE));
+
+            auto stime = std::chrono::high_resolution_clock::now();
+            // Reduce by keys to compute sums of inner products in same cluster
+            const uint32_t reduce_tpb = 1024;
+            const uint32_t reduce_blocks = n;
+            const uint32_t n_thread_ceil = ceil((double)n / (double) reduce_tpb) * reduce_tpb;
+            sum_points<<<reduce_blocks, reduce_tpb>>>(d_kernel,
+                                                      d_clusters,
+                                                      d_clusters_len,
+                                                      d_tmp,
+                                                      n, k, n_thread_ceil);
+            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+#if TEST_DEBUG
+            cudaMemcpy(h_distances_computed, d_tmp, sizeof(DATA_TYPE)*n*k, cudaMemcpyDeviceToHost);
+            write_mat_file(logfile, h_distances_computed, n, k, "TMP-COMPUTED");
+#endif
+            DATA_TYPE * d_centroids;
+            cudaMalloc(&d_centroids, sizeof(DATA_TYPE)*k);
+
+            const uint32_t centroid_tpb = 1024;
+            const uint32_t centroid_blocks = ceil(((uint64_t)n * (uint64_t)n) / (double)centroid_tpb); 
+            sum_centroids<<<centroid_blocks, centroid_tpb>>>(d_kernel,
+                                                              d_clusters,
+                                                              d_clusters_len,
+                                                              d_centroids,
+                                                              n, k);
+            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+            const uint32_t distances_tpb = 1024;
+            const uint32_t distances_blocks = ceil( (double)(n*k) / (double)distances_tpb);
+            compute_distances_naive<<<distances_blocks, distances_tpb>>>
+                                    (d_kernel, d_centroids, d_tmp, d_distances, n, k);
+            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+            auto etime = std::chrono::high_resolution_clock::now();
+            auto duration= std::chrono::duration_cast<std::chrono::duration<double>>(etime- stime).count();
+            std::cout<<"Time: "<<duration<<"s"<<std::endl;
+
+
+            cudaMemcpy(h_distances_computed, d_distances, sizeof(DATA_TYPE)*n*k, cudaMemcpyDeviceToHost);
+
+
+            for (uint64_t ni = 0; ni < n; ++ni) {
+                for (uint64_t ni2 = 0; ni2 < n; ++ni2) {
+                    uint64_t cluster = h_clusters[ni2];
+                    h_tmp[ni * k + cluster] += (h_kernel[ni*n + ni2]/h_clusters_len[cluster]);
+                }
+
+            }
+
+#if TEST_DEBUG
+            write_mat_file(logfile, h_tmp, n, k, "TMP-CORRECT");
+#endif
+
+
+            for (uint64_t ni3=0; ni3<n; ++ni3) {
+                for (uint64_t ni = 0; ni < n; ++ni) {
+                    uint64_t cluster = h_clusters[ni];
+                    for (uint64_t ni2 = 0; ni2 < n; ++ni2) {
+                        uint64_t cluster2 = h_clusters[ni2];
+                        if (cluster==cluster2) {
+                            h_distances_correct[ni3 * k + cluster] += h_kernel[ni * n + ni2]/(double)pow(h_clusters_len[cluster], 2);
+                        }
+                    }
+                }
+            }
+
+            for (uint32_t ni = 0; ni < n; ++ni) {
+                for (uint32_t ki = 0; ki < k; ++ki) {
+                    h_distances_correct[ni * k + ki] += h_kernel[ni*n + ni];
+                    h_distances_correct[ni * k + ki] += -2*h_tmp[ni * k + ki];
+                }
+            }
+
+
+#if TEST_DEBUG
+            write_mat_file(logfile, h_distances_correct, n, k, "CORRECT");
+            write_mat_file(logfile, h_distances_computed, n, k, "COMPUTED");
+            printf("\nKERNEL %d:\n", n);
+            printMatrixColMajLimited(h_kernel, n, n, 10, 10);
+#endif
+
+			for (uint32_t ni = 0; ni < n; ++ni) {
+				for (uint32_t ni2 = 0; ni2 < k; ++ni2) {
+
+					REQUIRE( fabs(h_distances_correct[ni2 + ni*k] - h_distances_computed[ni2 + ni*k] ) < EPSILON );
+				}
+			}
+
+			cublasDestroy(cublasHandle);
+			delete[] h_kernel;
+			delete[] h_points;
+            delete[] h_tmp;
+			delete[] h_points_row_maj;
+            delete[] h_distances_correct;
+            delete[] h_distances_computed;
+			cudaFree(d_distances);
+			cudaFree(d_kernel);
+			cudaFree(d_points);
+			cudaFree(d_tmp);
+			cudaFree(d_clusters);
+			cudaFree(d_clusters_len);
+            cudaFree(d_centroids);
+#if TEST_DEBUG
+            logfile.close();
+#endif
+		}
+	}
+
+}
+
 
 TEST_CASE("kernel_argmin", "[kernel][argmin]") {
 	const unsigned int TESTS_N = 9;
