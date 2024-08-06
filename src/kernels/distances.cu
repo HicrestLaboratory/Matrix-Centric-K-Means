@@ -7,7 +7,22 @@
 #include "../kmeans.cuh"
 
 //#define DEBUG_GEMM 1
-#define BATCHED_GEMM
+//#define BATCHED_GEMM
+
+void write_mat_file(std::ofstream& out,
+                    DATA_TYPE * A,
+                    const uint32_t n,
+                    const uint32_t d,
+                    const std::string prefix)
+{
+    out<<prefix<<std::endl;
+    for (int i=0; i<n; i++) {
+        for (int j=0; j<d; j++) {
+            out<<A[j + i*d]<<",";
+        }
+        out<<std::endl;
+    }
+}
 
 /*** Warp oriented ***/
 
@@ -736,9 +751,13 @@ void compute_distances_popcorn_naive(const uint32_t d,
                                      DATA_TYPE * d_distances)
 {
 
+    /*
+    std::ofstream naive_out;
+    naive_out.open("naive_distances.out");
+    */
+
     DATA_TYPE * d_tmp;
     CHECK_CUDA_ERROR(cudaMalloc(&d_tmp, sizeof(DATA_TYPE)*n*k));
-
 
     const uint32_t reduce_tpb = 1024;
     const uint32_t reduce_blocks = n;
@@ -749,6 +768,13 @@ void compute_distances_popcorn_naive(const uint32_t d,
                                               d_tmp,
                                               n, k, n_thread_ceil);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    /*
+    DATA_TYPE * h_kvt = new DATA_TYPE[n*k];
+    cudaMemcpy(h_kvt, d_tmp, sizeof(DATA_TYPE)*n*k, cudaMemcpyDeviceToHost);
+    write_mat_file(naive_out, h_kvt, n, k, "KVT");
+    delete[] h_kvt;
+    */
 
 
     const uint32_t centroid_tpb = 1024;
@@ -766,8 +792,11 @@ void compute_distances_popcorn_naive(const uint32_t d,
                             (d_B, d_c_norms, d_tmp, d_distances, n, k);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
+    CHECK_CUDA_ERROR(cudaMemset(d_c_norms, 0, sizeof(DATA_TYPE)*k));
 
     CHECK_CUDA_ERROR(cudaFree(d_tmp));
+
+    //naive_out.close();
 
 }
 
@@ -895,7 +924,7 @@ void compute_distances_popcorn_spmv(const cusparseHandle_t& handle,
      * so if we access it as if it were stored in row major order, it's like we're
      * working with D.
      */
-    DATA_TYPE alpha = 1.0; //????
+    DATA_TYPE alpha = 1.0;
     const DATA_TYPE beta = 0.0;
     
     size_t buff_size = 0;
@@ -1120,7 +1149,7 @@ __global__ void sum_points(const DATA_TYPE * d_K,
         if (j<n) {
             const uint32_t cluster = d_clusters[j];
             const DATA_TYPE thread_data = d_K[point_id * n + j];
-            atomicAdd(point_sums + cluster, thread_data / d_clusters_len[cluster]); 
+            atomicAdd(point_sums + cluster, thread_data); 
         }
     }
 
@@ -1128,7 +1157,7 @@ __global__ void sum_points(const DATA_TYPE * d_K,
 
     /* Write result */
     if (threadIdx.x < k) {
-        d_distances[point_id * k + threadIdx.x] = point_sums[threadIdx.x];
+        d_distances[point_id * k + threadIdx.x] = point_sums[threadIdx.x] / (DATA_TYPE)d_clusters_len[threadIdx.x];
     }
 
 }
@@ -1156,7 +1185,7 @@ __global__ void sum_centroids(const DATA_TYPE * d_K,
     if (i < n) {
         const uint32_t cluster_i = d_clusters[i];
         const uint32_t cluster_j = d_clusters[j];
-        DATA_TYPE thread_data = (cluster_i == cluster_j) ? d_K[j + i*n] : 0;
+        DATA_TYPE thread_data = (cluster_i == cluster_j) ? d_K[j + i*n]/-2 : 0;
         atomicAdd(centroid_sums + cluster_i, (thread_data / (double)pow(d_clusters_len[cluster_i], 2)));
     }
 
@@ -1180,13 +1209,13 @@ __global__ void compute_distances_naive(const DATA_TYPE * d_K,
     const uint32_t i = tid / k;
     const uint32_t j = tid % k;
     if (tid < n*k)
-        d_distances[j + i*k] = -2*d_tmp[j + i*k] + d_K[i + i*n] + d_centroids[j];
+        d_distances[j + i*k] = d_tmp[j + i*k] + d_centroids[j];
 }
 
 
 __global__ void compute_kernel_matrix_naive(DATA_TYPE * d_K, 
                                             const DATA_TYPE * d_P, 
-                                            const uint32_t n, 
+                                            const unsigned long long n, 
                                             const uint32_t d, 
                                             const uint32_t d_closest_2_pow)
 {
@@ -1194,22 +1223,24 @@ __global__ void compute_kernel_matrix_naive(DATA_TYPE * d_K,
     __shared__ typename WarpReduce::TempStorage temp_storage;
 
     const uint32_t lane_id = threadIdx.x % warpSize;
-    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+    const unsigned long long tid = (unsigned long long)threadIdx.x + 
+                                    (unsigned long long )blockDim.x * 
+                                    (unsigned long long)blockIdx.x;
 
     const uint32_t tpb = blockDim.x;
     const uint32_t wpb = tpb / warpSize;
-    const uint32_t wid = tid / warpSize;
+    const unsigned long long wid = tid / warpSize;
 
-	const uint32_t point_id_x = (wid % n);
-	const uint32_t point_id_y = (wid / n);
+	const unsigned long long point_id_x = (wid % n);
+	const unsigned long long point_id_y = (wid / n);
 
-    const uint32_t offset_x = d * point_id_x + lane_id;
-    const uint32_t offset_y = d * point_id_y + lane_id;
+    const unsigned long long offset_x = d * point_id_x + lane_id;
+    const unsigned long long offset_y = d * point_id_y + lane_id;
 
     DATA_TYPE result = 0;
 
     for (int j=0; j<d_closest_2_pow; j+=warpSize) {
-        DATA_TYPE reg = (lane_id + j < d && point_id_x < n && point_id_y < n) ? 
+        DATA_TYPE reg = (lane_id + j < d && point_id_y < n) ? 
                          d_P[offset_x + j] * d_P[offset_y + j] : 0;
         result += WarpReduce(temp_storage).Sum(reg);
     }
@@ -1217,7 +1248,7 @@ __global__ void compute_kernel_matrix_naive(DATA_TYPE * d_K,
     __syncthreads();
 
     if (lane_id == 0 && point_id_y < n) {
-        d_K[point_id_y + point_id_x*n] = result;
+        d_K[point_id_x + point_id_y*n] = result;
     }
 }
 

@@ -4,6 +4,7 @@
 #include "include/common.h"
 #include <cublas_v2.h>
 #include <cusparse.h>
+#include <cub/cub.cuh>
 
 using namespace std;
 

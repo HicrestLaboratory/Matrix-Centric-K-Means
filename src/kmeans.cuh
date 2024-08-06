@@ -160,7 +160,8 @@ class Kmeans {
     DATA_TYPE* d_centroids;
     DATA_TYPE* d_centroids_row_norms;
     DATA_TYPE* d_z_vals;
-    int32_t* d_clusters;
+    int32_t * d_clusters;
+    uint32_t * d_clusters_len;
 
     uint32_t * d_perm_vec;
 

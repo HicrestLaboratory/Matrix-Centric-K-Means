@@ -567,7 +567,7 @@ __global__ void scale_diag(DATA_TYPE * d_M, const uint32_t n, const DATA_TYPE al
 
 __global__ void compute_kernel_matrix_naive(DATA_TYPE * d_K, 
                                             const DATA_TYPE * d_P, 
-                                            const uint32_t n, 
+                                            const unsigned long long n, 
                                             const uint32_t d, 
                                             const uint32_t d_closest_2_pow);
 
@@ -584,9 +584,9 @@ void init_kernel_mtx_naive(cublasHandle_t& cublasHandle,
 {
     const unsigned int d_pow2 = pow(2, ceil(log2(d)));
 
-    const uint32_t tpb = 512;
+    const uint32_t tpb = 1024;
     const uint32_t wpb = tpb / 32;
-    const uint64_t blocks = ceil((double)(n*n) / (double)wpb);
+    const uint64_t blocks = ceil((unsigned long long )(n*n) / (double)wpb);
 
     compute_kernel_matrix_naive<<<blocks, tpb>>>(d_B, d_points, n, d, d_pow2);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());

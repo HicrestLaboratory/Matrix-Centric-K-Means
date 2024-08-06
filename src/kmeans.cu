@@ -183,6 +183,14 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
         }
         kernel_out<<std::endl;
     }
+    kernel_out<<"...."<<std::endl;
+        
+    for (int i=n-10; i<n; i++) {
+        for (int j=0; j<n; j++) {
+            kernel_out<<h_B[j + i*n]<<",";
+        }
+        kernel_out<<std::endl;
+    }
     kernel_out.close();
     delete[] h_B;
 #endif
@@ -233,6 +241,9 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
                                             CUDA_R_32F,
                                             CUSPARSE_ORDER_ROW));
 
+    if (level >= REORDER) {
+        CHECK_CUSPARSE_ERROR(cusparseDnMatSetValues(B_descr, d_B_new));
+    }
 
     if (level <= NAIVE_MTX) {
         CHECK_CUDA_ERROR(cudaMalloc(&d_C, sizeof(DATA_TYPE)*k*k));
@@ -244,9 +255,6 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
                                             CUDA_R_32F,
                                             CUSPARSE_ORDER_ROW));
 
-    if (level >= REORDER) {
-        CHECK_CUSPARSE_ERROR(cusparseDnMatSetValues(B_descr, d_B_new));
-    }
 
     CHECK_CUDA_ERROR(cudaMalloc(&d_centroids_row_norms, sizeof(DATA_TYPE) * k));
     CHECK_CUDA_ERROR(cudaMalloc(&d_z_vals, sizeof(DATA_TYPE) * n));
@@ -379,7 +387,6 @@ void Kmeans::init_centroids_rand()
     CHECK_CUDA_ERROR(cudaMemcpy(d_clusters, h_clusters.data(), sizeof(int32_t)*n, cudaMemcpyHostToDevice));
 
 
-    uint32_t* d_clusters_len;
     CHECK_CUDA_ERROR(cudaMalloc(&d_clusters_len, k * sizeof(uint32_t)));
     CHECK_CUDA_ERROR(cudaMemcpy(d_clusters_len, h_clusters_len.data(), sizeof(uint32_t)*k, cudaMemcpyHostToDevice));
 
@@ -419,8 +426,6 @@ void Kmeans::init_centroids_rand()
         );
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     }
-
-    CHECK_CUDA_ERROR(cudaFree(d_clusters_len));
 
 }
 
@@ -791,8 +796,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
                                              CUDA_R_32F,
                                              CUSPARSE_ORDER_COL));
 
-    uint32_t* d_clusters_len;
-    CHECK_CUDA_ERROR(cudaMalloc(&d_clusters_len, k * sizeof(uint32_t)));
+    //CHECK_CUDA_ERROR(cudaMalloc(&d_clusters_len, k * sizeof(uint32_t)));
     thrust::device_ptr<uint32_t> d_clusters_len_ptr(d_clusters_len);
     thrust::device_vector<uint32_t> d_cluster_offsets(k);
 
