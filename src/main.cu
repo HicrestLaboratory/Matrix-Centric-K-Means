@@ -21,6 +21,7 @@ int main(int argc, char **argv) {
   InputParser<DATA_TYPE> *input = NULL;
   bool check_converged;
   string dist_method_str, init_method_str, kernel_str;
+  int level;
 
   parse_input_args(argc, argv, 
                     &d, &n, &k, 
@@ -29,7 +30,8 @@ int main(int argc, char **argv) {
                     &check_converged,
                     dist_method_str,
                     init_method_str,
-                    kernel_str);
+                    kernel_str,
+                    &level);
 
   #if DEBUG_INPUT_DATA
     cout << "Points" << endl << *input << endl;
@@ -100,7 +102,8 @@ int main(int argc, char **argv) {
     Kmeans kmeans(n, d, k, tol, seed, input->get_dataset(), &deviceProp,
                     init_method,
                     dist_method,
-                    kernel);
+                    kernel,
+                    level);
     const auto init_end = chrono::high_resolution_clock::now();
 
     if (i>0)

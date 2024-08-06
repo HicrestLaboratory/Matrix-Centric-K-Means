@@ -33,6 +33,11 @@
 
 #define DATA_TYPE float 
 
+#define NAIVE_GPU 0
+#define NAIVE_MTX 1
+#define OPT_MTX 2
+#define REORDER 3
+
 //#define NVTX
 
 #endif

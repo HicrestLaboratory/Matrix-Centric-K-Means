@@ -3,6 +3,7 @@
 
 #include "include/common.h"
 #include "include/point.hpp"
+#include "kernels/kernels.cuh"
 
 #include <random>
 
@@ -118,7 +119,8 @@ class Kmeans {
     Kmeans(const size_t n, const uint32_t d, const uint32_t k, const float tol, const int *seed, Point<DATA_TYPE>** points, cudaDeviceProp* deviceProps,
             InitMethod _initMethod=InitMethod::random,
             DistanceMethod _distMethod=DistanceMethod::gemm,
-            Kernel _kernel=Kernel::linear);
+            Kernel _kernel=Kernel::linear,
+            int _level=3);
     ~Kmeans();
 
     /**
@@ -146,6 +148,7 @@ class Kmeans {
     uint64_t CENTROIDS_BYTES;
     Point<DATA_TYPE>** points;
     InitMethod initMethod;
+    int level;
     mt19937* generator;
 
     DATA_TYPE* h_points;
@@ -161,8 +164,10 @@ class Kmeans {
 
     uint32_t * d_perm_vec;
 
-    DATA_TYPE* d_B;
-    DATA_TYPE* d_B_new;
+    DATA_TYPE * d_B;
+    DATA_TYPE * d_B_new;
+
+    DATA_TYPE * d_C;
 
     DATA_TYPE * d_V_vals;
     int32_t * d_V_rowinds;

@@ -53,7 +53,7 @@
 #include "cuda_utils.cuh"
 #include "kmeans.cuh"
 
-#include "kernels/kernels.cuh"
+//#include "kernels/kernels.cuh"
 
 //#define LOG_KERNEL
 #define LOG 0
@@ -72,7 +72,8 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
                 Point<DATA_TYPE>** _points, cudaDeviceProp* _deviceProps,
                 const InitMethod _initMethod,
                 const DistanceMethod _distMethod,
-                const Kernel _kernel)
+                const Kernel _kernel,
+                const int _level)
                 : n(_n), d(_d), k(_k), tol(_tol),
                 POINTS_BYTES(_n * _d * sizeof(DATA_TYPE)),
                 CENTROIDS_BYTES(_k * _d * sizeof(DATA_TYPE)),
@@ -80,7 +81,8 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
                 points(_points),
                 deviceProps(_deviceProps),
                 initMethod(_initMethod),
-                dist_method(_distMethod)
+                dist_method(_distMethod),
+                level(_level)
 {
 #if LOG_PERM
     permute_out.open("permute_out.out");
@@ -137,6 +139,10 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
 #endif
 
 
+    CHECK_CUDA_ERROR(cudaMalloc(&d_B, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
+    CHECK_CUDA_ERROR(cudaMalloc(&d_perm_vec, sizeof(uint32_t)*n));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_clusters, n * sizeof(int32_t)));
+
 #if PERFORMANCES_BMULT
     cudaEvent_t e_perf_bmult_start, e_perf_bmult_stop;
 
@@ -145,35 +151,26 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
     cudaEventRecord(e_perf_bmult_start);
 #endif
 
-
-
     /* Init B */
-    CHECK_CUDA_ERROR(cudaMalloc(&d_B, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
-    CHECK_CUDA_ERROR(cudaMalloc(&d_perm_vec, sizeof(uint32_t)*n));
-    CHECK_CUDA_ERROR(cudaMalloc(&d_clusters, n * sizeof(int32_t)));
 
     switch(_kernel)
     {
         case Kernel::linear:
-            init_kernel_mtx<LinearKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
+            init_kernel_mtx<LinearKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B, level);
             break;
 
         case Kernel::polynomial:
-            init_kernel_mtx<PolynomialKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
+            init_kernel_mtx<PolynomialKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B, level);
             break;
 
         case Kernel::sigmoid:
-            init_kernel_mtx<SigmoidKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
+            init_kernel_mtx<SigmoidKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B, level);
             break;
 
         case Kernel::rbf:
-            init_kernel_mtx<RBFKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B);
+            init_kernel_mtx<RBFKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B, level);
             break;
     }
-
-	CHECK_CUDA_ERROR(cudaFree(d_points));
-    CHECK_CUDA_ERROR(cudaMalloc(&d_B_new, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
-
 
 #ifdef LOG_KERNEL
     std::ofstream kernel_out;
@@ -205,8 +202,10 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
     cudaEventDestroy(e_perf_bmult_stop);
 #endif
 
+	CHECK_CUDA_ERROR(cudaFree(d_points));
 
     /* Init matrix buffers */
+    CHECK_CUDA_ERROR(cudaMalloc(&d_B_new, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
 
     CHECK_CUDA_ERROR(cudaMalloc(&d_V_vals, sizeof(DATA_TYPE)*n));
     CHECK_CUDA_ERROR(cudaMalloc(&d_V_rowinds, sizeof(int32_t)*n));
@@ -230,9 +229,24 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
 
     CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&B_descr,
                                             n, n, n,
-                                            d_B_new,
+                                            d_B,
                                             CUDA_R_32F,
                                             CUSPARSE_ORDER_ROW));
+
+
+    if (level <= NAIVE_MTX) {
+        CHECK_CUDA_ERROR(cudaMalloc(&d_C, sizeof(DATA_TYPE)*k*k));
+    }
+
+    CHECK_CUSPARSE_ERROR(cusparseCreateDnMat(&C_descr,
+                                            k, k, k,
+                                            d_C,
+                                            CUDA_R_32F,
+                                            CUSPARSE_ORDER_ROW));
+
+    if (level >= REORDER) {
+        CHECK_CUSPARSE_ERROR(cusparseDnMatSetValues(B_descr, d_B_new));
+    }
 
     CHECK_CUDA_ERROR(cudaMalloc(&d_centroids_row_norms, sizeof(DATA_TYPE) * k));
     CHECK_CUDA_ERROR(cudaMalloc(&d_z_vals, sizeof(DATA_TYPE) * n));
@@ -307,6 +321,10 @@ Kmeans::~Kmeans ()
 		CHECK_CUDA_ERROR(cudaFreeHost(h_centroids_matrix));
 	}
 
+    if (level <= NAIVE_MTX) {
+        CHECK_CUDA_ERROR(cudaFree(d_C));
+    }
+
     CHECK_CUDA_ERROR(cudaFree(d_V_vals));
     CHECK_CUDA_ERROR(cudaFree(d_V_rowinds));
     CHECK_CUDA_ERROR(cudaFree(d_V_colptrs));
@@ -319,6 +337,7 @@ Kmeans::~Kmeans ()
     
 
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(B_descr));
+    CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(C_descr));
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnMat(D_descr));
 
     CHECK_CUSPARSE_ERROR(cusparseDestroyDnVec(c_tilde_descr));
@@ -368,24 +387,38 @@ void Kmeans::init_centroids_rand()
     thrust::device_vector<uint32_t> d_cluster_offsets(k);
     thrust::device_ptr<uint32_t> d_clusters_len_ptr(d_clusters_len);
 
-    thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k, d_cluster_offsets.begin());
-    set_perm_vec(d_clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
 
     const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
     const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
 
-    compute_v_sparse_csc_permuted<<<v_mat_grid_dim, v_mat_block_dim>>>
-    (
-      d_V_vals,
-      d_V_rowinds,
-      d_V_colptrs,
-      d_clusters, d_clusters_len,
-      d_perm_vec,
-      n
-    );
-    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    if (level>=REORDER) {
 
-    permute_kernel_mat();
+        thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k, d_cluster_offsets.begin());
+        set_perm_vec(d_clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
+        compute_v_sparse_csc_permuted<<<v_mat_grid_dim, v_mat_block_dim>>>
+        (
+          d_V_vals,
+          d_V_rowinds,
+          d_V_colptrs,
+          d_clusters, d_clusters_len,
+          d_perm_vec,
+          n
+        );
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+        permute_kernel_mat();
+
+    } else {
+        compute_v_sparse<<<v_mat_grid_dim, v_mat_block_dim>>>
+        (
+          d_V_vals,
+          d_V_rowinds,
+          d_V_colptrs,
+          d_clusters, d_clusters_len,
+          n
+        );
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    }
 
     CHECK_CUDA_ERROR(cudaFree(d_clusters_len));
 
@@ -791,16 +824,37 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         cudaEventRecord(e_perf_dist_start);
 
 #endif
-        compute_distances_spmm_no_centroids(cusparseHandle,
-                                            d, n, k,
-                                            d_points_row_norms,
-                                            B_descr, V_descr,
-                                            D_descr, 
-                                            c_tilde_descr,
-                                            z_descr,
-                                            d_perm_vec,
+        if (level >= OPT_MTX) {
+            compute_distances_popcorn_spmv(cusparseHandle,
+                                                d, n, k,
+                                                d_points_row_norms,
+                                                B_descr, V_descr,
+                                                D_descr, 
+                                                c_tilde_descr,
+                                                z_descr,
+                                                d_perm_vec,
+                                                d_clusters,
+                                                d_distances,
+                                                level);
+        } else if (level == NAIVE_MTX) {
+            compute_distances_popcorn_spmm(cusparseHandle,
+                                                d, n, k,
+                                                d_points_row_norms,
+                                                B_descr, V_descr,
+                                                D_descr, 
+                                                C_descr,
+                                                d_clusters,
+                                                d_distances,
+                                                level);
+        } else if (level == NAIVE_GPU) {
+            compute_distances_popcorn_naive(d, n, k,
+                                            d_B,
                                             d_clusters,
+                                            d_clusters_len,
+                                            d_centroids_row_norms,
                                             d_distances);
+        }
+
 
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
@@ -891,6 +945,10 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
 #endif
 
+        if (level==NAIVE_GPU) {
+            thrust::device_ptr<int32_t> d_clusters_ptr(d_clusters);
+            thrust::copy(clusters, clusters+n, d_clusters_ptr);
+        }
 
 #if LOG
         /*
@@ -919,26 +977,41 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         cudaEventRecord(e_perf_cent_start);
 
 #endif
-        thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
-                                d_cluster_offsets.begin());
-        set_perm_vec(clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
 
         const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
         const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
 
-        compute_v_sparse_csc_permuted<<<v_mat_grid_dim, v_mat_block_dim>>>
-        (
-          d_V_vals,
-          d_V_rowinds,
-          d_V_colptrs,
-          clusters, d_clusters_len,
-          d_perm_vec,
-          n
-        );
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        if (level >= REORDER) {
 
+            thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
+                                    d_cluster_offsets.begin());
+            set_perm_vec(clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
 
-        permute_kernel_mat();
+            compute_v_sparse_csc_permuted<<<v_mat_grid_dim, v_mat_block_dim>>>
+            (
+              d_V_vals,
+              d_V_rowinds,
+              d_V_colptrs,
+              clusters, d_clusters_len,
+              d_perm_vec,
+              n
+            );
+            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+            permute_kernel_mat();
+
+        } else {
+            compute_v_sparse<<<v_mat_grid_dim, v_mat_block_dim>>>
+            (
+              d_V_vals,
+              d_V_rowinds,
+              d_V_colptrs,
+              clusters, d_clusters_len,
+              n
+            );
+            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        }
+
 
 #if PERFORMANCES_KERNEL_CENTROIDS
 
@@ -1075,9 +1148,10 @@ void Kmeans::permute_kernel_mat()
     );
 
 
-    /* Set B pointer */
-    //CHECK_CUSPARSE_ERROR(cusparseDnMatSetValues(B_descr, d_B_new));
-    //std::swap(d_B, d_B_new);
+    /* Set B pointer 
+    CHECK_CUSPARSE_ERROR(cusparseDnMatSetValues(B_descr, d_B_new));
+    std::swap(d_B, d_B_new);
+    */
 }
 
 

@@ -24,6 +24,11 @@ struct Pair {
   uint32_t i;
 };
 
+enum class KernelMtxMethod {
+    KERNEL_MTX_NAIVE,
+    KERNEL_MTX_GEMM,
+    KERNEL_MTX_SYRK
+};
 
 
 __global__ void sigmoid(const uint32_t n,
@@ -520,7 +525,29 @@ void compute_distances_spmm(const cusparseHandle_t& handle,
                                         cusparseDnMatDescr_t& D,
                                         DATA_TYPE * d_distances);
 
-void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
+void compute_distances_popcorn_naive(const uint32_t d, 
+                                     const uint32_t n,
+                                     const uint32_t k,
+                                     const DATA_TYPE * d_B,
+                                     int32_t * d_clusters,
+                                     const uint32_t * d_clusters_len,
+                                     DATA_TYPE * d_c_norms,
+                                     DATA_TYPE * d_distances);
+
+void compute_distances_popcorn_spmm(const cusparseHandle_t& handle,
+                                        const uint32_t d, 
+                                        const uint32_t n,
+                                        const uint32_t k,
+                                        const DATA_TYPE * d_points_row_norms,
+                                        const cusparseDnMatDescr_t& B,
+                                        const cusparseSpMatDescr_t& V,
+                                        cusparseDnMatDescr_t& D,
+                                        cusparseDnMatDescr_t& C,
+                                        const int32_t * d_clusters,
+                                        DATA_TYPE * d_distances,
+                                        int level);
+
+void compute_distances_popcorn_spmv(const cusparseHandle_t& handle,
                                         const uint32_t d, 
                                         const uint32_t n,
                                         const uint32_t k,
@@ -532,9 +559,127 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
                                         cusparseDnVecDescr_t& z,
                                         const uint32_t * d_perm_vec,
                                         const int32_t * d_clusters,
-                                        DATA_TYPE * d_distances);
+                                        DATA_TYPE * d_distances,
+                                        int level);
 
 __global__ void scale_diag(DATA_TYPE * d_M, const uint32_t n, const DATA_TYPE alpha);
+
+
+__global__ void compute_kernel_matrix_naive(DATA_TYPE * d_K, 
+                                            const DATA_TYPE * d_P, 
+                                            const uint32_t n, 
+                                            const uint32_t d, 
+                                            const uint32_t d_closest_2_pow);
+
+
+
+template <typename Kernel>
+void init_kernel_mtx_naive(cublasHandle_t& cublasHandle,
+                         cudaDeviceProp * deviceProps,
+                         const unsigned long long n,
+                         const uint32_t k,
+                         const uint32_t d,
+                         const DATA_TYPE * d_points,
+                         DATA_TYPE * d_B)
+{
+    const unsigned int d_pow2 = pow(2, ceil(log2(d)));
+
+    const uint32_t tpb = 512;
+    const uint32_t wpb = tpb / 32;
+    const uint64_t blocks = ceil((double)(n*n) / (double)wpb);
+
+    compute_kernel_matrix_naive<<<blocks, tpb>>>(d_B, d_points, n, d, d_pow2);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    Kernel::function(n, d, d_B);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+}
+
+
+template <typename Kernel>
+void init_kernel_mtx_gemm(cublasHandle_t& cublasHandle,
+                         cudaDeviceProp * deviceProps,
+                         const unsigned long long n,
+                         const uint32_t k,
+                         const uint32_t d,
+                         const DATA_TYPE * d_points,
+                         DATA_TYPE * d_B)
+{
+    DATA_TYPE b_beta = 0.0;
+    DATA_TYPE b_alpha = 1.0;
+
+    CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle, 
+                                    CUBLAS_OP_T,
+                                    CUBLAS_OP_N,
+                                    n, n, d,
+                                    &b_alpha,
+                                    d_points, d,
+                                    d_points, d,
+                                    &b_beta,
+                                    d_B, n));
+
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    Kernel::function(n, d, d_B);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+}
+
+template <typename Kernel>
+void init_kernel_mtx_syrk(cublasHandle_t& cublasHandle,
+                         cudaDeviceProp * deviceProps,
+                         const unsigned long long n,
+                         const uint32_t k,
+                         const uint32_t d,
+                         const DATA_TYPE * d_points,
+                         DATA_TYPE * d_B)
+{
+    DATA_TYPE b_beta = 0.0;
+    DATA_TYPE b_alpha = 1.0;
+
+
+    DATA_TYPE * d_B_tmp;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_B_tmp, sizeof(DATA_TYPE)*n*n)); //TODO: Just allocate space for triangular region
+    CHECK_CUDA_ERROR(cudaMemset(d_B_tmp, 0, sizeof(DATA_TYPE)*n*n)); //Just in case
+
+    CHECK_CUBLAS_ERROR(cublasSsyrk(cublasHandle,
+                                   CUBLAS_FILL_MODE_LOWER,
+                                   CUBLAS_OP_T,
+                                   n, d, 
+                                   &b_alpha,
+                                   d_points, d,
+                                   &b_beta,
+                                   d_B_tmp, n));
+
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+
+    b_alpha = 1.0;
+    b_beta = 1.0;
+    CHECK_CUBLAS_ERROR(cublasSgeam(cublasHandle,
+                                   CUBLAS_OP_T,
+                                   CUBLAS_OP_N,
+                                   n, n,
+                                   &b_alpha,
+                                   d_B_tmp, n,
+                                   &b_beta,
+                                   d_B_tmp, n,
+                                   d_B, n));
+
+
+    const uint32_t scale_diag_b_block_dim = std::min((unsigned long long )deviceProps->maxThreadsPerBlock, n);
+    const uint32_t scale_diag_b_grid_dim = std::ceil(static_cast<double>(n)/static_cast<double>(scale_diag_b_block_dim));
+
+    scale_diag<<<scale_diag_b_grid_dim, scale_diag_b_block_dim>>>(d_B, n, 0.5);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    //TODO: Make triangular version of these
+    Kernel::function(n, d, d_B);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    CHECK_CUDA_ERROR(cudaFree(d_B_tmp));
+    
+}
+
 
 template <typename Kernel>
 void init_kernel_mtx(cublasHandle_t& cublasHandle,
@@ -543,89 +688,48 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
                      const uint32_t k,
                      const uint32_t d,
                      const DATA_TYPE * d_points,
-                     DATA_TYPE * d_B)
+                     DATA_TYPE * d_B,
+                     int level)
 {
-    DATA_TYPE b_beta = 0.0;
-    DATA_TYPE b_alpha = 1.0;
+    switch(level)
+    {
+        case NAIVE_GPU:
+            init_kernel_mtx_naive<Kernel>(cublasHandle, deviceProps,
+                                          n, k, d,
+                                          d_points, d_B);
+            break;
 
-    if (n<=1000 && false) {
-        CHECK_CUBLAS_ERROR(cublasSgemm(cublasHandle, 
-                                        CUBLAS_OP_T,
-                                        CUBLAS_OP_N,
-                                        n, n, d,
-                                        &b_alpha,
-                                        d_points, d,
-                                        d_points, d,
-                                        &b_beta,
-                                        d_B, n));
+        case NAIVE_MTX:
+            init_kernel_mtx_gemm<Kernel>(cublasHandle, deviceProps,
+                                          n, k, d,
+                                          d_points, d_B);
+            break;
 
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        case OPT_MTX:
+            init_kernel_mtx_syrk<Kernel>(cublasHandle, deviceProps,
+                                          n, k, d,
+                                          d_points, d_B);
+            break;
 
-        Kernel::function(n, d, d_B);
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
-    } else {
-
-        DATA_TYPE * d_B_tmp;
-        CHECK_CUDA_ERROR(cudaMalloc(&d_B_tmp, sizeof(DATA_TYPE)*n*n)); //TODO: Just allocate space for triangular region
-        CHECK_CUDA_ERROR(cudaMemset(d_B_tmp, 0, sizeof(DATA_TYPE)*n*n)); //Just in case
-
-        CHECK_CUBLAS_ERROR(cublasSsyrk(cublasHandle,
-                                       CUBLAS_FILL_MODE_LOWER,
-                                       CUBLAS_OP_T,
-                                       n, d, 
-                                       &b_alpha,
-                                       d_points, d,
-                                       &b_beta,
-                                       d_B_tmp, n));
-
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
-
-        b_alpha = 1.0;
-        b_beta = 1.0;
-        CHECK_CUBLAS_ERROR(cublasSgeam(cublasHandle,
-                                       CUBLAS_OP_T,
-                                       CUBLAS_OP_N,
-                                       n, n,
-                                       &b_alpha,
-                                       d_B_tmp, n,
-                                       &b_beta,
-                                       d_B_tmp, n,
-                                       d_B, n));
-
-
-        const uint32_t scale_diag_b_block_dim = std::min((unsigned long long )deviceProps->maxThreadsPerBlock, n);
-        const uint32_t scale_diag_b_grid_dim = std::ceil(static_cast<double>(n)/static_cast<double>(scale_diag_b_block_dim));
-
-        scale_diag<<<scale_diag_b_grid_dim, scale_diag_b_block_dim>>>(d_B, n, 0.5);
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
-        //TODO: Make triangular version of these
-        Kernel::function(n, d, d_B);
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
-        CHECK_CUDA_ERROR(cudaFree(d_B_tmp));
+        case REORDER:
+            init_kernel_mtx_syrk<Kernel>(cublasHandle, deviceProps,
+                                          n, k, d,
+                                          d_points, d_B);
+            break;
     }
-
-    
 }
 
-__global__ void compute_kernel_matrix_naive(DATA_TYPE* d_K, 
-                                            const DATA_TYPE* d_P, 
-                                            const uint32_t n, 
-                                            const uint32_t d, 
-                                            const uint32_t d_closest_2_pow);
+
 
 __global__ void sum_points(const DATA_TYPE * d_K,
-                            const uint32_t * d_clusters,
+                            int32_t * d_clusters,
                             const uint32_t * d_clusters_len,
                             DATA_TYPE * d_distances,
                             const uint32_t n, const uint32_t k,
                             const uint32_t n_thread_ceil);
 
 __global__ void sum_centroids(const DATA_TYPE * d_K,
-                            const uint32_t * d_clusters,
+                            int32_t * d_clusters,
                             const uint32_t * d_clusters_len,
                             DATA_TYPE * d_centroids,
                             const uint32_t n, const uint32_t k);

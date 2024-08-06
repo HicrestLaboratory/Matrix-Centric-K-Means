@@ -555,6 +555,21 @@ __global__ void compute_norm_mtx(const uint32_t m, const uint32_t n,
 }
 
 
+__global__ void add_norm_mtx_naive(const uint32_t m, const uint32_t n,
+                                     DATA_TYPE * d_centroids_norms, 
+                                     const DATA_TYPE * d_points_norms,
+                                     DATA_TYPE * M)
+{
+    const uint32_t tid = threadIdx.x + (blockDim.x * blockIdx.x);
+    if (tid < m*n) {
+        const uint64_t centroid_norm_idx = tid % n;
+        const uint64_t point_norm_idx = tid / n;
+        d_centroids_norms[centroid_norm_idx] = (d_centroids_norms[centroid_norm_idx] == 0) ? INFINITY : d_centroids_norms[centroid_norm_idx];
+        M[tid] += (d_centroids_norms[centroid_norm_idx] + 0);
+    }
+}
+
+
 __global__ void add_norm_mtx(const uint32_t m, const uint32_t n,
                              DATA_TYPE * d_centroids_norms, 
                              DATA_TYPE * M)
@@ -711,7 +726,153 @@ __global__  void filter_c_norms(const uint32_t k,
 }
 
 
-void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
+void compute_distances_popcorn_naive(const uint32_t d, 
+                                     const uint32_t n,
+                                     const uint32_t k,
+                                     const DATA_TYPE * d_B,
+                                     int32_t * d_clusters,
+                                     const uint32_t * d_clusters_len,
+                                     DATA_TYPE * d_c_norms,
+                                     DATA_TYPE * d_distances)
+{
+
+    DATA_TYPE * d_tmp;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_tmp, sizeof(DATA_TYPE)*n*k));
+
+
+    const uint32_t reduce_tpb = 1024;
+    const uint32_t reduce_blocks = n;
+    const uint32_t n_thread_ceil = ceil((double)n / (double) reduce_tpb) * reduce_tpb;
+    sum_points<<<reduce_blocks, reduce_tpb>>>(d_B,
+                                              d_clusters,
+                                              d_clusters_len,
+                                              d_tmp,
+                                              n, k, n_thread_ceil);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+
+    const uint32_t centroid_tpb = 1024;
+    const uint64_t centroid_blocks = ceil(((uint64_t)n * (uint64_t)n) / (double)centroid_tpb); 
+    sum_centroids<<<centroid_blocks, centroid_tpb>>>(d_B,
+                                                      d_clusters,
+                                                      d_clusters_len,
+                                                      d_c_norms,
+                                                      n, k);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    const uint32_t distances_tpb = 1024;
+    const uint32_t distances_blocks = ceil( (double)(n*k) / (double)distances_tpb);
+    compute_distances_naive<<<distances_blocks, distances_tpb>>>
+                            (d_B, d_c_norms, d_tmp, d_distances, n, k);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+
+    CHECK_CUDA_ERROR(cudaFree(d_tmp));
+
+}
+
+
+void compute_distances_popcorn_spmm(const cusparseHandle_t& handle,
+                                        const uint32_t d, 
+                                        const uint32_t n,
+                                        const uint32_t k,
+                                        const DATA_TYPE * d_points_row_norms,
+                                        const cusparseDnMatDescr_t& B,
+                                        const cusparseSpMatDescr_t& V,
+                                        cusparseDnMatDescr_t& D,
+                                        cusparseDnMatDescr_t& C,
+                                        const int32_t * d_clusters,
+                                        DATA_TYPE * d_distances,
+                                        int level) 
+{
+    DATA_TYPE alpha = 1.0; //????
+    const DATA_TYPE beta = 0.0;
+    
+    size_t buff_size = 0;
+
+    CHECK_CUSPARSE_ERROR(cusparseSpMM_bufferSize(handle,
+                                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                                  &alpha,
+                                                  V,
+                                                  B,
+                                                  &beta,
+                                                  D,
+                                                  CUDA_R_32F,
+                                                  CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                                  &buff_size));
+    
+    void * d_buff;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_buff, buff_size));
+
+    CHECK_CUSPARSE_ERROR(cusparseSpMM(handle,
+                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                      &alpha,
+                                      V,
+                                      B,
+                                      &beta,
+                                      D,
+                                      CUDA_R_32F,
+                                      CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                      d_buff));
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    CHECK_CUSPARSE_ERROR(cusparseDnMatGetValues(D, (void**)&d_distances));
+
+    CHECK_CUDA_ERROR(cudaFree(d_buff));
+
+
+    CHECK_CUSPARSE_ERROR(cusparseSpMM_bufferSize(handle,
+                                              CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                              CUSPARSE_OPERATION_TRANSPOSE,
+                                              &alpha,
+                                              V,
+                                              D,
+                                              &beta,
+                                              C,
+                                              CUDA_R_32F,
+                                              CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                              &buff_size));
+
+    CHECK_CUDA_ERROR(cudaMalloc(&d_buff, buff_size));
+
+    CHECK_CUSPARSE_ERROR(cusparseSpMM(handle,
+                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                      CUSPARSE_OPERATION_TRANSPOSE,
+                                      &alpha,
+                                      V,
+                                      D,
+                                      &beta,
+                                      C,
+                                      CUDA_R_32F,
+                                      CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                      d_buff));
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    CHECK_CUDA_ERROR(cudaFree(d_buff));
+
+	DATA_TYPE * d_c_norms;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_c_norms, sizeof(DATA_TYPE)*k));
+
+    const uint32_t block_dim_diag = min(k, 1024); //TODO Replace with device props max threads 
+    const uint32_t grid_dim_diag = ceil((float)k / (float)block_dim_diag);
+
+    /* Extract diagonal from CC^T */
+    DATA_TYPE * d_C_vals;
+    CHECK_CUSPARSE_ERROR(cusparseDnMatGetValues(C, (void**)(&d_C_vals)));
+    copy_diag_scal<<<grid_dim_diag, block_dim_diag>>>(d_C_vals, d_c_norms, k, k, -2.0);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    const uint32_t block_dim = min(n*k, 1024); //TODO Replace with device props max threads 
+    const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
+    add_norm_mtx_naive<<<grid_dim, block_dim>>>(n, k, d_c_norms,
+                                                d_points_row_norms,
+                                                d_distances);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    CHECK_CUDA_ERROR(cudaFree(d_c_norms));
+}
+
+void compute_distances_popcorn_spmv(const cusparseHandle_t& handle,
                                         const uint32_t d, 
                                         const uint32_t n,
                                         const uint32_t k,
@@ -723,7 +884,8 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
                                         cusparseDnVecDescr_t& z,
                                         const uint32_t * d_perm_vec,
                                         const int32_t * d_clusters,
-                                        DATA_TYPE * d_distances)
+                                        DATA_TYPE * d_distances,
+                                        int level)
 {
 
     /* d_distances = BV^T.
@@ -786,7 +948,7 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
     */
 
 
-
+	DATA_TYPE * d_c_norms;
 
     /* Setup z */
     // cuSPARSE does not let you fetch individual sparse matrix fields, you have to do all of them
@@ -819,11 +981,13 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
 
     const uint32_t block_dim_z = min(n, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim_z = ceil((float)n / (float)block_dim_z);
-    init_z_permuted<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, V_rowinds, d_perm_vec, d_z_vals);
-    //init_z<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, V_rowinds, d_z_vals);
+    if (level>=REORDER) {
+        init_z_permuted<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, V_rowinds, d_perm_vec, d_z_vals);
+    } else {
+        init_z<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, V_rowinds, d_z_vals);
+    }
 
     /* SpMV to compute c_tilde */
-    DATA_TYPE * d_c_norms;
     CHECK_CUSPARSE_ERROR(cusparseDnVecGetValues(c_tilde, (void**)&d_c_norms));
 
     alpha = -0.5;
@@ -856,7 +1020,7 @@ void compute_distances_spmm_no_centroids(const cusparseHandle_t& handle,
                                             d_distances);
                                             */
     add_norm_mtx<<<grid_dim, block_dim>>>(n, k, d_c_norms,
-                                            d_distances);
+                                        d_distances);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
     /*
@@ -933,46 +1097,10 @@ __global__ void linear(const uint32_t n,
 }
 
 
-__global__ void compute_kernel_matrix_naive(DATA_TYPE * d_K, 
-                                            const DATA_TYPE * d_P, 
-                                            const uint32_t n, 
-                                            const uint32_t d, 
-                                            const uint32_t d_closest_2_pow)
-{
-    using WarpReduce = cub::WarpReduce<DATA_TYPE>;
-    __shared__ typename WarpReduce::TempStorage temp_storage;
-
-    const uint32_t lane_id = threadIdx.x % warpSize;
-    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
-
-    const uint32_t tpb = blockDim.x;
-    const uint32_t wpb = tpb / warpSize;
-    const uint32_t wid = tid / warpSize;
-
-	const uint32_t point_id_x = (wid % n);
-	const uint32_t point_id_y = (wid / n);
-
-    const uint32_t offset_x = d * point_id_x + lane_id;
-    const uint32_t offset_y = d * point_id_y + lane_id;
-
-    DATA_TYPE result = 0;
-
-    for (int j=0; j<d_closest_2_pow; j+=warpSize) {
-        DATA_TYPE reg = (lane_id + j < d && point_id_x < n && point_id_y < n) ? 
-                         d_P[offset_x + j] * d_P[offset_y + j] : 0;
-        result += WarpReduce(temp_storage).Sum(reg);
-    }
-
-    __syncthreads();
-
-    if (lane_id == 0 && point_id_y < n) {
-        d_K[point_id_y + point_id_x*n] = result;
-    }
-}
 
 
 __global__ void sum_points(const DATA_TYPE * d_K,
-                            const uint32_t * d_clusters,
+                            int32_t * d_clusters,
                             const uint32_t * d_clusters_len,
                             DATA_TYPE * d_distances,
                             const uint32_t n, const uint32_t k,
@@ -1007,7 +1135,7 @@ __global__ void sum_points(const DATA_TYPE * d_K,
 
 
 __global__ void sum_centroids(const DATA_TYPE * d_K,
-                            const uint32_t * d_clusters,
+                            int32_t * d_clusters,
                             const uint32_t * d_clusters_len,
                             DATA_TYPE * d_centroids,
                             const uint32_t n, const uint32_t k)
@@ -1055,6 +1183,43 @@ __global__ void compute_distances_naive(const DATA_TYPE * d_K,
         d_distances[j + i*k] = -2*d_tmp[j + i*k] + d_K[i + i*n] + d_centroids[j];
 }
 
+
+__global__ void compute_kernel_matrix_naive(DATA_TYPE * d_K, 
+                                            const DATA_TYPE * d_P, 
+                                            const uint32_t n, 
+                                            const uint32_t d, 
+                                            const uint32_t d_closest_2_pow)
+{
+    using WarpReduce = cub::WarpReduce<DATA_TYPE>;
+    __shared__ typename WarpReduce::TempStorage temp_storage;
+
+    const uint32_t lane_id = threadIdx.x % warpSize;
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+
+    const uint32_t tpb = blockDim.x;
+    const uint32_t wpb = tpb / warpSize;
+    const uint32_t wid = tid / warpSize;
+
+	const uint32_t point_id_x = (wid % n);
+	const uint32_t point_id_y = (wid / n);
+
+    const uint32_t offset_x = d * point_id_x + lane_id;
+    const uint32_t offset_y = d * point_id_y + lane_id;
+
+    DATA_TYPE result = 0;
+
+    for (int j=0; j<d_closest_2_pow; j+=warpSize) {
+        DATA_TYPE reg = (lane_id + j < d && point_id_x < n && point_id_y < n) ? 
+                         d_P[offset_x + j] * d_P[offset_y + j] : 0;
+        result += WarpReduce(temp_storage).Sum(reg);
+    }
+
+    __syncthreads();
+
+    if (lane_id == 0 && point_id_y < n) {
+        d_K[point_id_y + point_id_x*n] = result;
+    }
+}
 
 
 
