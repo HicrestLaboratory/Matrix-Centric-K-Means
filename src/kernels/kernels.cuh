@@ -728,11 +728,24 @@ __global__ void sum_points(const DATA_TYPE * d_K,
                             const uint32_t n, const uint32_t k,
                             const uint32_t n_thread_ceil);
 
+__global__ void sum_points_largek(const DATA_TYPE * d_K,
+                                    int32_t * d_clusters,
+                                    const uint32_t * d_clusters_len,
+                                    DATA_TYPE * d_distances,
+                                    const uint32_t n, const uint32_t k,
+                                    const uint32_t n_thread_ceil);
+
 __global__ void sum_centroids(const DATA_TYPE * d_K,
                             int32_t * d_clusters,
                             const uint32_t * d_clusters_len,
                             DATA_TYPE * d_centroids,
                             const uint32_t n, const uint32_t k);
+
+__global__ void sum_centroids_largek(const DATA_TYPE * d_K,
+                                        int32_t * d_clusters,
+                                        const uint32_t * d_clusters_len,
+                                        DATA_TYPE * d_centroids,
+                                        const uint32_t n, const uint32_t k);
 
 __global__ void compute_distances_naive(const DATA_TYPE * d_K,
                                         const DATA_TYPE * d_centroids,

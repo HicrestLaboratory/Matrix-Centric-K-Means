@@ -762,11 +762,20 @@ void compute_distances_popcorn_naive(const uint32_t d,
     const uint32_t reduce_tpb = 1024;
     const uint32_t reduce_blocks = n;
     const uint32_t n_thread_ceil = ceil((double)n / (double) reduce_tpb) * reduce_tpb;
-    sum_points<<<reduce_blocks, reduce_tpb>>>(d_B,
-                                              d_clusters,
-                                              d_clusters_len,
-                                              d_tmp,
-                                              n, k, n_thread_ceil);
+
+    if (k>100) { /* TODO: Device-specific threshold based off of shared memory */
+        sum_points_largek<<<reduce_blocks, reduce_tpb>>>(d_B,
+                                                          d_clusters,
+                                                          d_clusters_len,
+                                                          d_tmp,
+                                                          n, k, n_thread_ceil);
+    } else {
+        sum_points<<<reduce_blocks, reduce_tpb>>>(d_B,
+                                                  d_clusters,
+                                                  d_clusters_len,
+                                                  d_tmp,
+                                                  n, k, n_thread_ceil);
+    }
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
     /*
@@ -779,11 +788,20 @@ void compute_distances_popcorn_naive(const uint32_t d,
 
     const uint32_t centroid_tpb = 1024;
     const uint64_t centroid_blocks = ceil(((uint64_t)n * (uint64_t)n) / (double)centroid_tpb); 
-    sum_centroids<<<centroid_blocks, centroid_tpb>>>(d_B,
-                                                      d_clusters,
-                                                      d_clusters_len,
-                                                      d_c_norms,
-                                                      n, k);
+    
+    if (k>100) {
+        sum_centroids_largek<<<centroid_blocks, centroid_tpb>>>(d_B,
+                                                                  d_clusters,
+                                                                  d_clusters_len,
+                                                                  d_c_norms,
+                                                                  n, k);
+    } else {
+        sum_centroids<<<centroid_blocks, centroid_tpb>>>(d_B,
+                                                          d_clusters,
+                                                          d_clusters_len,
+                                                          d_c_norms,
+                                                          n, k);
+    }
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
     const uint32_t distances_tpb = 1024;
@@ -1162,6 +1180,27 @@ __global__ void sum_points(const DATA_TYPE * d_K,
 
 }
 
+/* Does not use shared memory because k is too large */
+__global__ void sum_points_largek(const DATA_TYPE * d_K,
+                                    int32_t * d_clusters,
+                                    const uint32_t * d_clusters_len,
+                                    DATA_TYPE * d_distances,
+                                    const uint32_t n, const uint32_t k,
+                                    const uint32_t n_thread_ceil)
+{
+    const uint64_t point_id = blockIdx.x;
+
+    /* Reduce all inner products in the same cluster */
+    for (int j=threadIdx.x; j<n_thread_ceil; j += blockDim.x) {
+        if (j<n) {
+            const uint32_t cluster = d_clusters[j];
+            const DATA_TYPE thread_data = d_K[point_id * n + j] / d_clusters_len[cluster];
+            atomicAdd(d_distances + ((point_id * k) + cluster), thread_data); 
+        }
+    }
+
+}
+
 
 __global__ void sum_centroids(const DATA_TYPE * d_K,
                             int32_t * d_clusters,
@@ -1195,6 +1234,29 @@ __global__ void sum_centroids(const DATA_TYPE * d_K,
     if (threadIdx.x < k) {
         atomicAdd(d_centroids + threadIdx.x, centroid_sums[threadIdx.x]);
     }
+
+}
+
+
+__global__ void sum_centroids_largek(const DATA_TYPE * d_K,
+                                        int32_t * d_clusters,
+                                        const uint32_t * d_clusters_len,
+                                        DATA_TYPE * d_centroids,
+                                        const uint32_t n, const uint32_t k)
+{
+
+    const uint32_t tid = blockDim.x * blockIdx.x + threadIdx.x;
+    const uint32_t i = tid / n;
+    const uint32_t j = tid % n;
+
+    /* Reduction */
+    if (i < n) {
+        const uint32_t cluster_i = d_clusters[i];
+        const uint32_t cluster_j = d_clusters[j];
+        DATA_TYPE thread_data = (cluster_i == cluster_j) ? d_K[j + i*n]/-2 : 0;
+        atomicAdd(d_centroids + cluster_i, (thread_data / (double)pow(d_clusters_len[cluster_i], 2)));
+    }
+
 
 }
 
