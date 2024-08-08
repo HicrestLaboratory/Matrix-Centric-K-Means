@@ -735,6 +735,21 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
                                           n, k, d,
                                           d_points, d_B);
             break;
+
+        case FINAL:
+        {
+            float ratio = static_cast<double>(n) / static_cast<double>(d);
+            if (ratio > GEMM_THRESHOLD)
+                init_kernel_mtx_gemm<Kernel>(cublasHandle, deviceProps,
+                                              n, k, d,
+                                              d_points, d_B);
+            else
+                init_kernel_mtx_syrk<Kernel>(cublasHandle, deviceProps,
+                                              n, k, d,
+                                              d_points, d_B);
+        }
+
+            
     }
 }
 
@@ -755,9 +770,8 @@ __global__ void sum_points_largek(const DATA_TYPE * d_K,
                                     const uint32_t n_thread_ceil);
 
 __global__ void sum_centroids(const DATA_TYPE * d_K,
-                            int32_t * d_clusters,
-                            const uint32_t * d_clusters_len,
-                            DATA_TYPE * d_centroids,
+                            const int32_t * d_clusters,
+                            const uint32_t * d_clusters_len, DATA_TYPE * d_centroids,
                             const uint32_t n, const uint32_t k);
 
 __global__ void sum_centroids_largek(const DATA_TYPE * d_K,
