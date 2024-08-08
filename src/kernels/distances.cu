@@ -751,18 +751,27 @@ void compute_distances_popcorn_naive(const uint32_t d,
                                      DATA_TYPE * d_distances)
 {
 
+    //const auto malloc_stime = std::chrono::high_resolution_clock::now();
     /*
     std::ofstream naive_out;
     naive_out.open("naive_distances.out");
     */
 
-    DATA_TYPE * d_tmp;
-    CHECK_CUDA_ERROR(cudaMalloc(&d_tmp, sizeof(DATA_TYPE)*n*k));
 
-    const uint32_t reduce_tpb = 1024;
+    DATA_TYPE * d_tmp;
+    cudaMalloc(&d_tmp, sizeof(DATA_TYPE)*n*k);
+    /*
+    const auto malloc_etime = std::chrono::high_resolution_clock::now();
+    auto malloc_time = std::chrono::duration_cast<std::chrono::duration<double>>(malloc_etime - malloc_stime).count();
+    std::cout<<"MALLOC: "<<malloc_time<<std::endl;
+    */
+
+
+    const uint32_t reduce_tpb = min(k, 1024);
     const uint32_t reduce_blocks = n;
     const uint32_t n_thread_ceil = ceil((double)n / (double) reduce_tpb) * reduce_tpb;
 
+    //const auto points_stime = std::chrono::high_resolution_clock::now();
     if (k>100) { /* TODO: Device-specific threshold based off of shared memory */
         sum_points_largek<<<reduce_blocks, reduce_tpb>>>(d_B,
                                                           d_clusters,
@@ -777,6 +786,11 @@ void compute_distances_popcorn_naive(const uint32_t d,
                                                   n, k, n_thread_ceil);
     }
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    /*
+    const auto points_etime = std::chrono::high_resolution_clock::now();
+    auto points_time = std::chrono::duration_cast<std::chrono::duration<double>>(points_etime - points_stime).count();
+    std::cout<<"POINTS: "<<points_time<<std::endl;
+    */
 
     /*
     DATA_TYPE * h_kvt = new DATA_TYPE[n*k];
@@ -788,7 +802,17 @@ void compute_distances_popcorn_naive(const uint32_t d,
 
     const uint32_t centroid_tpb = 1024;
     const uint64_t centroid_blocks = ceil(((uint64_t)n * (uint64_t)n) / (double)centroid_tpb); 
+
+    /*
+    uint32_t * h_lens = new uint32_t[k];
+    cudaMemcpy(h_lens, d_clusters_len, sizeof(uint32_t)*k, cudaMemcpyDeviceToHost);
+    for (int i=0; i<k; i++) {
+        std::cout<<h_lens[i]<<std::endl;
+    }
+    delete[] h_lens;
+    */
     
+    //const auto centroids_stime = std::chrono::high_resolution_clock::now();
     if (k>100) {
         sum_centroids_largek<<<centroid_blocks, centroid_tpb>>>(d_B,
                                                                   d_clusters,
@@ -803,6 +827,11 @@ void compute_distances_popcorn_naive(const uint32_t d,
                                                           n, k);
     }
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    /*
+    const auto centroids_etime = std::chrono::high_resolution_clock::now();
+    auto centroids_time = std::chrono::duration_cast<std::chrono::duration<double>>(centroids_etime - centroids_stime).count();
+    std::cout<<"CENTROIDS: "<<centroids_time<<std::endl;
+    */
 
     const uint32_t distances_tpb = 1024;
     const uint32_t distances_blocks = ceil( (double)(n*k) / (double)distances_tpb);
@@ -1156,17 +1185,19 @@ __global__ void sum_points(const DATA_TYPE * d_K,
     const uint64_t point_id = blockIdx.x;
 
     extern __shared__ DATA_TYPE point_sums[];
-    if (threadIdx.x < k) {
-        point_sums[threadIdx.x] = 0;
-    }
+    point_sums[threadIdx.x] = 0;
+    DATA_TYPE sum = 0;
 
-    __syncthreads();
+    //__syncthreads();
 
     /* Reduce all inner products in the same cluster */
     for (int j=threadIdx.x; j<n_thread_ceil; j += blockDim.x) {
         if (j<n) {
             const uint32_t cluster = d_clusters[j];
-            const DATA_TYPE thread_data = d_K[point_id * n + j];
+            //const DATA_TYPE thread_data = (cluster==threadIdx.x) ? d_K[point_id * n + j] : 0;
+            const DATA_TYPE thread_data = d_K[point_id * (uint64_t)n + j];
+            //point_sums[cluster] = thread_data;
+            //sum += point_sums[threadIdx.x];
             atomicAdd(point_sums + cluster, thread_data); 
         }
     }
@@ -1174,9 +1205,8 @@ __global__ void sum_points(const DATA_TYPE * d_K,
     __syncthreads();
 
     /* Write result */
-    if (threadIdx.x < k) {
-        d_distances[point_id * k + threadIdx.x] = point_sums[threadIdx.x] / (DATA_TYPE)d_clusters_len[threadIdx.x];
-    }
+    d_distances[point_id * k + threadIdx.x] = point_sums[threadIdx.x] / (DATA_TYPE)d_clusters_len[threadIdx.x];
+    //d_distances[point_id * k + threadIdx.x] = sum / d_clusters_len[threadIdx.x];
 
 }
 
@@ -1209,9 +1239,11 @@ __global__ void sum_centroids(const DATA_TYPE * d_K,
                             const uint32_t n, const uint32_t k)
 {
 
-    const uint32_t tid = blockDim.x * blockIdx.x + threadIdx.x;
-    const uint32_t i = tid / n;
-    const uint32_t j = tid % n;
+    const unsigned long long tid = (unsigned long long )blockDim.x * 
+                                    (unsigned long long )blockIdx.x + 
+                                    (unsigned long long )threadIdx.x;
+    const unsigned long long i = tid / n;
+    const unsigned long long j = tid % n;
 
     extern __shared__ DATA_TYPE centroid_sums[];
     if (threadIdx.x < k) {
@@ -1222,8 +1254,8 @@ __global__ void sum_centroids(const DATA_TYPE * d_K,
 
     /* Intra-block reduction */
     if (i < n) {
-        const uint32_t cluster_i = d_clusters[i];
-        const uint32_t cluster_j = d_clusters[j];
+        const unsigned long long cluster_i = d_clusters[i];
+        const unsigned long long cluster_j = d_clusters[j];
         DATA_TYPE thread_data = (cluster_i == cluster_j) ? d_K[j + i*n]/-2 : 0;
         atomicAdd(centroid_sums + cluster_i, (thread_data / (double)pow(d_clusters_len[cluster_i], 2)));
     }
@@ -1314,6 +1346,41 @@ __global__ void compute_kernel_matrix_naive(DATA_TYPE * d_K,
     }
 }
 
+
+__global__ void compute_kernel_matrix_naive_blockreduce(DATA_TYPE * d_K, 
+                                                        const DATA_TYPE * d_P, 
+                                                        const unsigned long long n, 
+                                                        const unsigned long long d, 
+                                                        const unsigned long long d_closest_2_pow)
+{
+    using BlockReduce = cub::BlockReduce<DATA_TYPE, 128>;
+    __shared__ typename BlockReduce::TempStorage temp_storage;
+
+    const unsigned long long tid = (unsigned long long)threadIdx.x + 
+                                    (unsigned long long )blockDim.x * 
+                                    (unsigned long long)blockIdx.x;
+
+    const uint32_t tpb = blockDim.x;
+
+	const unsigned long long point_id_x = (blockIdx.x % n);
+	const unsigned long long point_id_y = (blockIdx.x / n);
+
+    const unsigned long long offset_x = d * point_id_x + threadIdx.x;
+    const unsigned long long offset_y = d * point_id_y + threadIdx.x;
+
+    DATA_TYPE result = 0;
+
+    for (unsigned long long j=0; j<d_closest_2_pow; j+=blockDim.x) {
+        DATA_TYPE reg = (threadIdx.x + j < d && point_id_y < n) ? 
+                         d_P[offset_x + j] * d_P[offset_y + j] : 0;
+        result += BlockReduce(temp_storage).Sum(reg);
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0 && point_id_y < n) {
+        d_K[point_id_x + point_id_y*n] = result;
+    }
+}
 
 
 

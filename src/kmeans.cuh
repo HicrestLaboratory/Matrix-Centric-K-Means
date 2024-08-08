@@ -164,6 +164,7 @@ class Kmeans {
     uint32_t * d_clusters_len;
 
     uint32_t * d_perm_vec;
+    uint32_t * d_perm_vec_prev;
 
     DATA_TYPE * d_B;
     DATA_TYPE * d_B_new;

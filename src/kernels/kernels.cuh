@@ -571,6 +571,12 @@ __global__ void compute_kernel_matrix_naive(DATA_TYPE * d_K,
                                             const uint32_t d, 
                                             const uint32_t d_closest_2_pow);
 
+__global__ void compute_kernel_matrix_naive_blockreduce(DATA_TYPE * d_K, 
+                                                        const DATA_TYPE * d_P, 
+                                                        const unsigned long long n, 
+                                                        const unsigned long long d, 
+                                                        const unsigned long long d_closest_2_pow);
+
 
 
 template <typename Kernel>
@@ -582,14 +588,22 @@ void init_kernel_mtx_naive(cublasHandle_t& cublasHandle,
                          const DATA_TYPE * d_points,
                          DATA_TYPE * d_B)
 {
-    const unsigned int d_pow2 = pow(2, ceil(log2(d)));
+    const unsigned long long d_pow2 = pow(2, ceil(log2(d)));
 
-    const uint32_t tpb = 1024;
-    const uint32_t wpb = tpb / 32;
-    const uint64_t blocks = ceil((unsigned long long )(n*n) / (double)wpb);
+    if (n > d) {
+        const uint32_t tpb = 1024;
+        const uint32_t wpb = tpb / 32;
+        const uint64_t blocks = ceil((unsigned long long )(n*n) / (double)wpb);
 
-    compute_kernel_matrix_naive<<<blocks, tpb>>>(d_B, d_points, n, d, d_pow2);
-    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        compute_kernel_matrix_naive<<<blocks, tpb>>>(d_B, d_points, n, d, d_pow2);
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    } else {
+        const uint32_t tpb = 128;
+        const uint64_t blocks = ceil((unsigned long long )(n*n) );
+
+        compute_kernel_matrix_naive_blockreduce<<<blocks, tpb>>>(d_B, d_points, n, d, d_pow2);
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    }
 
     Kernel::function(n, d, d_B);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
@@ -694,7 +708,12 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
     switch(level)
     {
         case NAIVE_GPU:
+            /*
             init_kernel_mtx_naive<Kernel>(cublasHandle, deviceProps,
+                                          n, k, d,
+                                          d_points, d_B);
+                                          */
+            init_kernel_mtx_gemm<Kernel>(cublasHandle, deviceProps,
                                           n, k, d,
                                           d_points, d_B);
             break;

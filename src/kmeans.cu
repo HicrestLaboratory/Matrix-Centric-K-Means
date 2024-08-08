@@ -141,6 +141,7 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
 
     CHECK_CUDA_ERROR(cudaMalloc(&d_B, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
     CHECK_CUDA_ERROR(cudaMalloc(&d_perm_vec, sizeof(uint32_t)*n));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_perm_vec_prev, sizeof(uint32_t)*n));
     CHECK_CUDA_ERROR(cudaMalloc(&d_clusters, n * sizeof(int32_t)));
 
 #if PERFORMANCES_BMULT
@@ -341,6 +342,7 @@ Kmeans::~Kmeans ()
     CHECK_CUDA_ERROR(cudaFree(d_centroids_row_norms));
     CHECK_CUDA_ERROR(cudaFree(d_z_vals));
     CHECK_CUDA_ERROR(cudaFree(d_perm_vec));
+    CHECK_CUDA_ERROR(cudaFree(d_perm_vec_prev));
     CHECK_CUDA_ERROR(cudaFree(d_clusters));
     
 
@@ -758,6 +760,7 @@ void Kmeans::init_centroids_plus_plus()
 uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 {
 
+
     uint64_t converged = maxiter;
     uint64_t iter = 0;
 
@@ -986,6 +989,8 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
 
         if (level >= REORDER) {
+
+            //CHECK_CUDA_ERROR(cudaMemcpy(d_perm_vec_prev, d_perm_vec, sizeof(uint32_t)*n));
 
             thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
                                     d_cluster_offsets.begin());
