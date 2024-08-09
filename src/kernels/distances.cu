@@ -1418,5 +1418,23 @@ __global__ void compute_kernel_matrix_naive_blockreduce(DATA_TYPE * d_K,
 }
 
 
+__global__ void make_kvpairs(const uint32_t * d_perm_vec,
+                             const uint32_t * d_perm_vec_prev,
+                             const uint32_t * d_nonzero_inds,
+                             Kvpair * d_perm_pairs,
+                             const uint32_t n, const uint32_t nnz)
+{
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < nnz) {
+        const uint32_t i = d_nonzero_inds[tid];
+        const uint32_t j = d_perm_vec[i];
+        const uint32_t l = d_perm_vec_prev[j];
+        d_perm_pairs[tid].key = i;
+        d_perm_pairs[tid].value = l;
+    }
+}
+
+
+
 
 /*** END Matrix multiplication ***/

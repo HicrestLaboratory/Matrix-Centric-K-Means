@@ -23,6 +23,7 @@
 #include <thrust/functional.h>
 #include <thrust/sequence.h>
 #include <thrust/gather.h>
+#include <thrust/count.h>
 
 #include <raft/core/device_mdarray.hpp>
 #include <raft/cluster/kmeans.cuh>
@@ -762,6 +763,7 @@ void Kmeans::init_centroids_plus_plus()
 uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 {
 
+    thrust::device_vector<uint32_t> d_indices(n);
 
     uint64_t converged = maxiter;
     uint64_t iter = 0;
@@ -992,7 +994,9 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
         if (do_reorder) {
 
-            //CHECK_CUDA_ERROR(cudaMemcpy(d_perm_vec_prev, d_perm_vec, sizeof(uint32_t)*n));
+            /* Store current permutation vector before creating a new one */
+            CHECK_CUDA_ERROR(cudaMemcpy(d_perm_vec_prev, d_perm_vec, sizeof(uint32_t)*n,
+                                        cudaMemcpyDeviceToDevice));
 
             thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
                                     d_cluster_offsets.begin());
@@ -1009,7 +1013,12 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
             );
             CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-            permute_kernel_mat();
+            /* After a few iterations, most points are stationary */
+            if (iter > 3) {
+                permute_kernel_mat_swap(d_indices);
+            } else {
+                permute_kernel_mat();
+            }
 
         } else {
             compute_v_sparse<<<v_mat_grid_dim, v_mat_block_dim>>>
@@ -1143,7 +1152,7 @@ void Kmeans::permute_kernel_mat()
 {
     unsigned long long n2 = (unsigned long long )n*(unsigned long long )n;
 
-    /* Use thrust fancy iterators and copying to write permuted kernel matrix to temporary storage */
+    /* Use thrust fancy iterators and copying to write permuted kernel matrix to d_B */
     thrust::device_ptr<DATA_TYPE> d_B_ptr(d_B);
     thrust::device_ptr<DATA_TYPE> d_B_new_ptr(d_B_new);
     thrust::copy_n (
@@ -1164,6 +1173,118 @@ void Kmeans::permute_kernel_mat()
     std::swap(d_B, d_B_new);
     */
 }
+
+
+void Kmeans::permute_kernel_mat_swap(thrust::device_vector<uint32_t> d_indices)
+{
+
+    thrust::device_ptr<DATA_TYPE> d_B_ptr(d_B);
+    thrust::device_ptr<DATA_TYPE> d_B_new_ptr(d_B_new);
+
+    thrust::device_vector<uint32_t> d_moved(n);
+    thrust::device_ptr<uint32_t> d_perm_ptr(d_perm_vec);
+    thrust::device_ptr<uint32_t> d_perm_ptr_prev(d_perm_vec_prev);
+
+    /* Step 1: 
+     * Use d_perm_vec and d_perm_vec_prev to identify points that have 
+     * changed clusters.
+     * p = d_perm_vec - d_perm_vec_prev. If p[i] != 0, then point i changed clusters.
+     */
+    thrust::transform(d_perm_ptr, d_perm_ptr + n, 
+                      d_perm_ptr_prev, d_moved.begin(),
+                      check_not_equals());
+
+    /* Step 2:
+     * Compute key value pairs indicating which rows of K should be swapped.
+     * This can be done using thrust::copy_if
+     */
+    uint32_t * h_moved  = new uint32_t[n];
+    cudaMemcpy(h_moved, thrust::raw_pointer_cast(d_moved.data()), sizeof(uint32_t)*n,
+                    cudaMemcpyDeviceToHost);
+
+    for (int i=0; i<n; i++) 
+        std::cout<<h_moved[i]<<std::endl;
+
+    delete[] h_moved;
+
+    /* Count the number of nonzero indices */
+    int nnz = thrust::count_if(d_moved.begin(), d_moved.end(), is_nonzero());
+
+    std::cout<<"NNZ: "<<nnz<<std::endl;
+
+    /* If nnz==0, no points have moved, and we don't have to do anything */
+    if (nnz==0)
+        return;
+
+    thrust::device_vector<uint32_t> d_nonzero_inds(nnz);
+
+    /* Populate d_nonzero_inds with all the nonzero indices */
+    thrust::copy_if(d_indices.begin(), d_indices.end(),
+                    d_moved.begin(),
+                    d_nonzero_inds.begin(),
+                    is_nonzero());
+
+    /* Create key value pairs */
+    thrust::device_vector<Kvpair> d_perm_pairs(nnz);
+
+    const uint32_t kvpair_threads = min(1024, nnz);
+    const uint32_t kvpair_blocks = ceil((double)n / (double)kvpair_threads);
+    make_kvpairs<<<kvpair_blocks, kvpair_threads>>>(d_perm_vec, d_perm_vec_prev,
+                                                    thrust::raw_pointer_cast(d_nonzero_inds.data()),
+                                                    thrust::raw_pointer_cast(d_perm_pairs.data()),
+                                                    n, nnz);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    std::vector<Kvpair> h_perm_pairs(nnz);
+    thrust::copy(d_perm_pairs.begin(),
+                 d_perm_pairs.end(),
+                 h_perm_pairs.begin());
+    
+    std::vector<bool> h_bitmap(n, false);
+
+
+    /* Step 3:
+     * Doing the swap.
+     * The idea is to use the d_B buffer as a temporary storage to "cache"
+     * rows that were overwritten by a swap, then, when we need the overwritten row,
+     * we can copy it from d_B.
+     * We store a bitmap to indicate whether or not rows are cached in the temporary buffer.
+     * This is done on the host for now because presumably nnz should be quite small.
+     */
+
+    for (auto const& pair : h_perm_pairs) {
+
+        const uint32_t i = pair.key;
+        const uint32_t l = pair.value;
+
+        /* Cache the row */
+        thrust::copy_n(d_B_new_ptr+(i*n), n, d_B_ptr+(i*n));
+
+        if (h_bitmap[l]==1) {
+
+            /* Update bitmap */
+            h_bitmap[l] = 0;
+
+            /* Perform the swap */
+            thrust::copy_n(d_B_ptr+(l*n), n, d_B_new_ptr+(i*n));
+
+        } else {
+
+            /* Perform the swap, but with the row of K */
+            thrust::copy_n(d_B_new_ptr+(l*n), n, d_B_new_ptr+(i*n));
+        }
+
+        /* Update bitmap, since we cached row i */
+        h_bitmap[i] = 1;
+    }
+
+}
+
+
+
+
+
+
 
 
 

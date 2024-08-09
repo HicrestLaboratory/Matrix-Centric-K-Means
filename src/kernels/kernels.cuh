@@ -24,6 +24,13 @@ struct Pair {
   uint32_t i;
 };
 
+struct Kvpair
+{
+    uint32_t key;
+    uint32_t value;
+};
+
+
 enum class KernelMtxMethod {
     KERNEL_MTX_NAIVE,
     KERNEL_MTX_GEMM,
@@ -355,6 +362,7 @@ __global__ void compute_perm_vec(uint32_t * d_perm_vec,
                                  uint32_t * d_clusters_offsets,
                                  const uint32_t n)
 {
+    //TODO: Somehow avoid redundant/needless copies of rows of K
     const int32_t tid = threadIdx.x + blockDim.x * blockIdx.x; 
     if (tid < n) {
         const uint32_t cluster = d_points_clusters[tid];
@@ -780,6 +788,12 @@ __global__ void compute_distances_naive(const DATA_TYPE * d_K,
                                         const DATA_TYPE * d_tmp,
                                         DATA_TYPE * d_distances,
                                         const uint32_t n, const uint32_t k);
+
+__global__ void make_kvpairs(const uint32_t * d_perm_vec,
+                             const uint32_t * d_perm_vec_prev,
+                             const uint32_t * d_nonzero_inds,
+                             Kvpair * d_perm_pairs,
+                             const uint32_t n, const uint32_t nnz);
 
 __global__ void check_convergence( const DATA_TYPE * d_centroids,
                                     const DATA_TYPE * d_last_centroids,

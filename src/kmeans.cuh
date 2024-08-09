@@ -115,6 +115,23 @@ class Kmeans {
 
     };
 
+    struct is_nonzero
+    {
+        __host__ __device__
+        bool operator()(uint32_t a) 
+        {
+            return a != 0;
+        }
+    };
+
+    struct check_not_equals
+    {
+        __host__ __device__
+        uint32_t operator()(uint32_t a, uint32_t b)
+        {
+            return static_cast<uint32_t>(a!=b);
+        }
+    };
 
     Kmeans(const size_t n, const uint32_t d, const uint32_t k, const float tol, const int *seed, Point<DATA_TYPE>** points, cudaDeviceProp* deviceProps,
             InitMethod _initMethod=InitMethod::random,
@@ -137,6 +154,7 @@ class Kmeans {
                       uint32_t * d_cluster_offsets);
 
     void permute_kernel_mat();
+    void permute_kernel_mat_swap(thrust::device_vector<uint32_t> d_indices);
 
     inline float get_score() const {return score;}
 
