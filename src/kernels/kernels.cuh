@@ -560,7 +560,7 @@ void compute_distances_popcorn_spmv(const cusparseHandle_t& handle,
                                         const uint32_t * d_perm_vec,
                                         const int32_t * d_clusters,
                                         DATA_TYPE * d_distances,
-                                        int level);
+                                        bool do_reorder);
 
 __global__ void scale_diag(DATA_TYPE * d_M, const uint32_t n, const DATA_TYPE alpha);
 
@@ -708,11 +708,6 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
     switch(level)
     {
         case NAIVE_GPU:
-            /*
-            init_kernel_mtx_naive<Kernel>(cublasHandle, deviceProps,
-                                          n, k, d,
-                                          d_points, d_B);
-                                          */
             init_kernel_mtx_gemm<Kernel>(cublasHandle, deviceProps,
                                           n, k, d,
                                           d_points, d_B);

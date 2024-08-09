@@ -950,7 +950,7 @@ void compute_distances_popcorn_spmv(const cusparseHandle_t& handle,
                                         const uint32_t * d_perm_vec,
                                         const int32_t * d_clusters,
                                         DATA_TYPE * d_distances,
-                                        int level)
+                                        bool do_reorder)
 {
 
     /* d_distances = BV^T.
@@ -1046,7 +1046,7 @@ void compute_distances_popcorn_spmv(const cusparseHandle_t& handle,
 
     const uint32_t block_dim_z = 256;//min(n, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim_z = ceil((float)n / (float)block_dim_z);
-    if (level>=REORDER) {
+    if (do_reorder) {
         init_z_permuted<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, V_rowinds, d_perm_vec, d_z_vals);
     } else {
         init_z<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, V_rowinds, d_z_vals);

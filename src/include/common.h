@@ -37,6 +37,9 @@
 #define NAIVE_MTX 1
 #define OPT_MTX 2
 #define REORDER 3
+#define FINAL 4
+
+#define GEMM_THRESHOLD 500
 
 //#define NVTX
 

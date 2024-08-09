@@ -151,6 +151,8 @@ class Kmeans {
     int level;
     mt19937* generator;
 
+    bool do_reorder;
+
     DATA_TYPE* h_points;
     DATA_TYPE* h_centroids;
     DATA_TYPE* d_new_centroids;

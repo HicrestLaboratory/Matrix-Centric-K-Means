@@ -99,6 +99,8 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
 		}
 	}
 
+    do_reorder = (k > 10) && (level>=REORDER);
+
 #if LOG
     std::ofstream points_out;
     points_out.open("points-ours.out");
@@ -242,7 +244,7 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
                                             CUDA_R_32F,
                                             CUSPARSE_ORDER_ROW));
 
-    if (level >= REORDER) {
+    if (do_reorder) {
         CHECK_CUSPARSE_ERROR(cusparseDnMatSetValues(B_descr, d_B_new));
     }
 
@@ -400,7 +402,7 @@ void Kmeans::init_centroids_rand()
     const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
     const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
 
-    if (level>=REORDER) {
+    if (do_reorder) {
 
         thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k, d_cluster_offsets.begin());
         set_perm_vec(d_clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
@@ -842,7 +844,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
                                                 d_perm_vec,
                                                 d_clusters,
                                                 d_distances,
-                                                level);
+                                                do_reorder);
         } else if (level == NAIVE_MTX) {
             compute_distances_popcorn_spmm(cusparseHandle,
                                                 d, n, k,
@@ -988,7 +990,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
         const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
 
-        if (level >= REORDER) {
+        if (do_reorder) {
 
             //CHECK_CUDA_ERROR(cudaMemcpy(d_perm_vec_prev, d_perm_vec, sizeof(uint32_t)*n));
 
