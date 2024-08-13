@@ -220,18 +220,18 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
     CHECK_CUDA_ERROR(cudaMalloc(&d_B_new, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
 
     CHECK_CUDA_ERROR(cudaMalloc(&d_V_vals, sizeof(DATA_TYPE)*n));
-    CHECK_CUDA_ERROR(cudaMalloc(&d_V_rowinds, sizeof(int32_t)*n));
-    CHECK_CUDA_ERROR(cudaMalloc(&d_V_colptrs, sizeof(int32_t)*(n+1)));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_V_colinds, sizeof(int32_t)*n));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_V_rowptrs, sizeof(int32_t)*(k+1)));
 
 
     h_centroids_matrix = NULL;
 
     /* Init matrix descriptors */
 
-    CHECK_CUSPARSE_ERROR(cusparseCreateCsc(&V_descr,
+    CHECK_CUSPARSE_ERROR(cusparseCreateCsr(&V_descr,
                                             k, n, n,
-                                            d_V_colptrs,
-                                            d_V_rowinds,
+                                            d_V_rowptrs,
+                                            d_V_colinds,
                                             d_V_vals,
                                             CUSPARSE_INDEX_32I,
                                             CUSPARSE_INDEX_32I,
@@ -338,8 +338,8 @@ Kmeans::~Kmeans ()
     }
 
     CHECK_CUDA_ERROR(cudaFree(d_V_vals));
-    CHECK_CUDA_ERROR(cudaFree(d_V_rowinds));
-    CHECK_CUDA_ERROR(cudaFree(d_V_colptrs));
+    CHECK_CUDA_ERROR(cudaFree(d_V_colinds));
+    CHECK_CUDA_ERROR(cudaFree(d_V_rowptrs));
 
 
     CHECK_CUDA_ERROR(cudaFree(d_centroids_row_norms));
@@ -402,32 +402,47 @@ void Kmeans::init_centroids_rand()
 
     const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
     const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
+    thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k, d_cluster_offsets.begin());
 
     if (do_reorder) {
 
-        thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k, d_cluster_offsets.begin());
-        set_perm_vec(d_clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
-        compute_v_sparse_csc_permuted<<<v_mat_grid_dim, v_mat_block_dim>>>
+        cudaMemcpy(d_V_rowptrs,
+                   thrust::raw_pointer_cast(d_cluster_offsets.data()),
+                   sizeof(uint32_t)*k,
+                   cudaMemcpyDeviceToDevice);
+
+        compute_v_sparse_csr_permuted<<<v_mat_grid_dim, v_mat_block_dim>>>
         (
           d_V_vals,
-          d_V_rowinds,
-          d_V_colptrs,
-          d_clusters, d_clusters_len,
-          d_perm_vec,
-          n
+          d_V_colinds,
+          d_V_rowptrs,
+          d_clusters,
+          d_clusters_len,
+          thrust::raw_pointer_cast(d_cluster_offsets.data()),
+          n, k
         );
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
+        thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k, d_cluster_offsets.begin());
+
+        set_perm_vec(d_clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
         permute_kernel_mat();
 
-    } else {
-        compute_v_sparse<<<v_mat_grid_dim, v_mat_block_dim>>>
+    } else if (level>0) {
+
+        cudaMemcpy(d_V_rowptrs,
+                   thrust::raw_pointer_cast(d_cluster_offsets.data()),
+                   sizeof(uint32_t)*k,
+                   cudaMemcpyDeviceToDevice);
+
+        compute_v_sparse_csr<<<v_mat_grid_dim, v_mat_block_dim>>>
         (
           d_V_vals,
-          d_V_rowinds,
-          d_V_colptrs,
+          d_V_colinds,
+          d_V_rowptrs,
           d_clusters, d_clusters_len,
-          n
+          thrust::raw_pointer_cast(d_cluster_offsets.data()),
+          n, k
         );
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     }
@@ -956,7 +971,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
 #endif
 
-        if (level==NAIVE_GPU) {
+        if (level==NAIVE_GPU || true) {
             thrust::device_ptr<int32_t> d_clusters_ptr(d_clusters);
             thrust::copy(clusters, clusters+n, d_clusters_ptr);
         }
@@ -992,43 +1007,86 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         const uint32_t v_mat_block_dim = min(n, (size_t)deviceProps->maxThreadsPerBlock);
         const uint32_t v_mat_grid_dim = ceil((float)n / (float)v_mat_block_dim);
 
+        /* Store current permutation vector before creating a new one */
+        CHECK_CUDA_ERROR(cudaMemcpy(d_perm_vec_prev, d_perm_vec, sizeof(uint32_t)*n,
+                                    cudaMemcpyDeviceToDevice));
+
+        thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
+                                d_cluster_offsets.begin());
+
+
         if (do_reorder) {
 
-            /* Store current permutation vector before creating a new one */
-            CHECK_CUDA_ERROR(cudaMemcpy(d_perm_vec_prev, d_perm_vec, sizeof(uint32_t)*n,
-                                        cudaMemcpyDeviceToDevice));
+            cudaMemcpy(d_V_rowptrs,
+                       thrust::raw_pointer_cast(d_cluster_offsets.data()),
+                       sizeof(uint32_t)*k,
+                       cudaMemcpyDeviceToDevice);
 
-            thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
-                                    d_cluster_offsets.begin());
-            set_perm_vec(clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
-
-            compute_v_sparse_csc_permuted<<<v_mat_grid_dim, v_mat_block_dim>>>
+            compute_v_sparse_csr_permuted<<<v_mat_grid_dim, v_mat_block_dim>>>
             (
               d_V_vals,
-              d_V_rowinds,
-              d_V_colptrs,
-              clusters, d_clusters_len,
-              d_perm_vec,
-              n
+              d_V_colinds,
+              d_V_rowptrs,
+              clusters,
+              d_clusters_len,
+              thrust::raw_pointer_cast(d_cluster_offsets.data()),
+              n, k
             );
             CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
+            thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
+                                    d_cluster_offsets.begin());
+
+            set_perm_vec(clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
+
             /* After a few iterations, most points are stationary */
-            if (iter > 3) {
+            if (iter > 3 && false) {
                 permute_kernel_mat_swap(d_indices);
             } else {
                 permute_kernel_mat();
             }
 
-        } else {
-            compute_v_sparse<<<v_mat_grid_dim, v_mat_block_dim>>>
+        } else if (level > 0) {
+
+            cudaMemcpy(d_V_rowptrs,
+                       thrust::raw_pointer_cast(d_cluster_offsets.data()),
+                       sizeof(uint32_t)*k,
+                       cudaMemcpyDeviceToDevice);
+
+            compute_v_sparse_csr<<<v_mat_grid_dim, v_mat_block_dim>>>
             (
               d_V_vals,
-              d_V_rowinds,
-              d_V_colptrs,
+              d_V_colinds,
+              d_V_rowptrs,
               clusters, d_clusters_len,
-              n
+              thrust::raw_pointer_cast(d_cluster_offsets.data()),
+              n, k
             );
+
+            /*
+            std::vector<DATA_TYPE> h_vals(n);
+            std::vector<int32_t> h_colinds(n);
+            std::vector<int32_t> h_rowptrs(k+1);
+            std::vector<uint32_t> h_cluster_lens(k);
+            std::vector<uint32_t> h_clusters(n);
+
+            cudaMemcpy(h_cluster_lens.data(),
+                       d_clusters_len,
+                       sizeof(uint32_t)*k,
+                       cudaMemcpyDeviceToHost);
+
+            thrust::copy(clusters, clusters+n, d_clusters.begin());
+
+            cudaMemcpy(h_clusters.data(),
+                       d_clusters,
+                       sizeof(uint32_t)*n,
+                       cudaMemcpyDeviceToHost);
+
+            for (int i=0; i<n; i++) {
+            */
+
+
+
             CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         }
 

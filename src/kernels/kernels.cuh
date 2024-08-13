@@ -355,6 +355,62 @@ __global__ void compute_v_sparse_csc_permuted(DATA_TYPE * d_vals,
     d_col_offsets[n] = n;
 }
 
+// CSR
+template <typename ClusterIter>
+__global__ void compute_v_sparse_csr(DATA_TYPE * d_vals,
+                                     int32_t * d_colinds,
+                                     int32_t * d_row_offsets,
+                                     ClusterIter d_points_clusters,
+                                     uint32_t * d_clusters_len,
+                                     uint32_t * d_clusters_offsets,
+                                     const size_t n,
+                                     const uint32_t k)
+{
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < n) {
+        const uint32_t cluster = d_points_clusters[tid];
+        const uint32_t idx = atomicAdd(d_clusters_offsets + cluster, 1);
+        d_vals[idx] = 1 / (DATA_TYPE)(d_clusters_len[cluster]);
+        d_colinds[idx] = tid;
+    }
+    d_row_offsets[k] = n;
+
+}
+
+// CSR permuted 
+template <typename ClusterIter>
+__global__ void compute_v_sparse_csr_permuted(DATA_TYPE * d_vals,
+                                             int32_t * d_colinds,
+                                             int32_t * d_row_offsets,
+                                             ClusterIter d_points_clusters,
+                                             uint32_t * d_clusters_len,
+                                             uint32_t * d_clusters_offsets,
+                                             const size_t n,
+                                             const uint32_t k)
+{
+    /*
+    const uint32_t cluster_len = d_clusters_len[blockIdx.x];
+    const uint32_t bound = ((cluster_len / blockDim.x) + 1) * cluster_len;
+    for (int j=threadIdx.x; j<bound; j+=blockDim.x) {
+        if (j < cluster_len) {
+            const uint32_t idx = d_clusters_sums[blockIdx.x] + j;
+            d_vals[idx] = 1 / (DATA_TYPE)(d_clusters_len[blockIdx.x]);
+            d_colinds[idx] = idx;
+        }
+    }
+    d_row_offsets[blockIdx.x] = d_clusters_sums[blockIdx.x];
+    d_row_offsets[k] = n;
+    */
+    const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < n) {
+        const uint32_t cluster = d_points_clusters[tid];
+        const uint32_t idx = atomicAdd(d_clusters_offsets + cluster, 1);
+        d_vals[idx] = 1 / (DATA_TYPE)(d_clusters_len[cluster]);
+        d_colinds[idx] = idx;
+    }
+    d_row_offsets[k] = n;
+}
+
 
 template <typename ClusterIter>
 __global__ void compute_perm_vec(uint32_t * d_perm_vec,
@@ -728,10 +784,18 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
             break;
 
         case OPT_MTX:
-            init_kernel_mtx_syrk<Kernel>(cublasHandle, deviceProps,
-                                          n, k, d,
-                                          d_points, d_B);
-            break;
+        {
+            float ratio = static_cast<double>(n) / static_cast<double>(d);
+            if (ratio > GEMM_THRESHOLD)
+                init_kernel_mtx_gemm<Kernel>(cublasHandle, deviceProps,
+                                              n, k, d,
+                                              d_points, d_B);
+            else
+                init_kernel_mtx_syrk<Kernel>(cublasHandle, deviceProps,
+                                              n, k, d,
+                                              d_points, d_B);
+        }
+        break;
 
         case REORDER:
             init_kernel_mtx_syrk<Kernel>(cublasHandle, deviceProps,
@@ -750,6 +814,7 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
                 init_kernel_mtx_syrk<Kernel>(cublasHandle, deviceProps,
                                               n, k, d,
                                               d_points, d_B);
+            break;
         }
 
             
@@ -775,7 +840,8 @@ __global__ void sum_points_largek(const DATA_TYPE * d_K,
 __global__ void sum_centroids(const DATA_TYPE * d_K,
                             const int32_t * d_clusters,
                             const uint32_t * d_clusters_len, DATA_TYPE * d_centroids,
-                            const uint32_t n, const uint32_t k);
+                            const uint32_t n, const uint32_t k,
+                            const uint32_t n_ceil);
 
 __global__ void sum_centroids_largek(const DATA_TYPE * d_K,
                                         int32_t * d_clusters,

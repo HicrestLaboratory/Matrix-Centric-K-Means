@@ -797,8 +797,9 @@ void compute_distances_popcorn_naive(const uint32_t d,
 
 
     const uint32_t centroid_tpb = 512;
-    const uint64_t centroid_blocks = ceil(((uint64_t)n * (uint64_t)n) / (double)centroid_tpb); 
-	//const uint64_t centroid_blocks = n;
+    //const uint64_t centroid_blocks = ceil(((uint64_t)n * (uint64_t)n) / (double)centroid_tpb); 
+	//const uint64_t centroid_blocks = k;
+    const uint32_t centroid_blocks = ceil((double)n /(double)centroid_tpb);
 
     /*
     uint32_t * h_lens = new uint32_t[k];
@@ -810,11 +811,12 @@ void compute_distances_popcorn_naive(const uint32_t d,
     */
     
     //const auto centroids_stime = std::chrono::high_resolution_clock::now();
-    sum_centroids<<<centroid_blocks, centroid_tpb>>>(d_B,
+    sum_centroids<<<centroid_blocks, centroid_tpb>>>(d_tmp,
                                                       d_clusters,
                                                       d_clusters_len,
                                                       d_c_norms,
-                                                      n, k);
+                                                      n, k,
+                                                      n_thread_ceil);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     /*
     const auto centroids_etime = std::chrono::high_resolution_clock::now();
@@ -974,7 +976,7 @@ void compute_distances_popcorn_spmv(const cusparseHandle_t& handle,
                                                   &beta,
                                                   D,
                                                   CUDA_R_32F,
-                                                  CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                                  CUSPARSE_SPMM_CSR_ALG2, //TODO: Play with this more
                                                   &buff_size));
     
     void * d_buff;
@@ -989,7 +991,7 @@ void compute_distances_popcorn_spmv(const cusparseHandle_t& handle,
                                       &beta,
                                       D,
                                       CUDA_R_32F,
-                                      CUSPARSE_SPMM_ALG_DEFAULT, //TODO: Play with this more
+                                      CUSPARSE_SPMM_CSR_ALG2, //TODO: Play with this more
                                       d_buff));
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
@@ -1025,6 +1027,7 @@ void compute_distances_popcorn_spmv(const cusparseHandle_t& handle,
     cusparseIndexBase_t base;
     cudaDataType vals_type;
 
+    /*
     CHECK_CUSPARSE_ERROR(cusparseCscGet(V,
                                         &rows, &cols, &nnz,
                                         (void**)&V_colptrs,
@@ -1033,6 +1036,7 @@ void compute_distances_popcorn_spmv(const cusparseHandle_t& handle,
                                         &col_type, &row_type,
                                         &base,
                                         &vals_type));
+                                        */
     DATA_TYPE * d_z_vals;
     CHECK_CUSPARSE_ERROR(cusparseDnVecGetValues(z, (void**)&d_z_vals));
 
@@ -1047,9 +1051,9 @@ void compute_distances_popcorn_spmv(const cusparseHandle_t& handle,
     const uint32_t block_dim_z = 256;//min(n, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim_z = ceil((float)n / (float)block_dim_z);
     if (do_reorder) {
-        init_z_permuted<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, V_rowinds, d_perm_vec, d_z_vals);
+        init_z_permuted<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, d_clusters, d_perm_vec, d_z_vals);
     } else {
-        init_z<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, V_rowinds, d_z_vals);
+        init_z<<<grid_dim_z, block_dim_z>>>(n, k, d_distances, d_clusters, d_z_vals);
     }
 
     /* SpMV to compute c_tilde */
@@ -1218,11 +1222,12 @@ __global__ void sum_points_largek(const DATA_TYPE * d_K,
 
 }
 
-__global__ void sum_centroids(const DATA_TYPE * d_K,
+__global__ void sum_centroids(const DATA_TYPE * d_tmp,
                             const int32_t * d_clusters,
                             const uint32_t * d_clusters_len,
                             DATA_TYPE * d_centroids,
-                            const uint32_t n, const uint32_t k)
+                            const uint32_t n, const uint32_t k,
+                            const uint32_t n_ceil)
 {
 
     const unsigned long long tid = (unsigned long long )blockDim.x *
@@ -1231,14 +1236,28 @@ __global__ void sum_centroids(const DATA_TYPE * d_K,
     const unsigned long long i = tid / n;
     const unsigned long long j = tid % n;
 
-    extern __shared__ DATA_TYPE centroid_sums[];
-    if (threadIdx.x < k) {
-        centroid_sums[threadIdx.x] = 0;
+
+    if (tid < n ) {
+        const uint32_t c = d_clusters[tid];
+        const uint32_t len = d_clusters_len[c];
+        DATA_TYPE thread_data = d_tmp[c + k * tid] / -2.0;
+        thread_data /= static_cast<DATA_TYPE>(len);
+        atomicAdd(&d_centroids[c], thread_data);
     }
 
-    __syncthreads();
+    /*
+    for (unsigned int l = threadIdx.x; l < n_ceil; l+=blockDim.x) {
+        const uint32_t c = d_clusters[l];
+        if (c==blockIdx.x) {
+            DATA_TYPE thread_data = d_tmp[blockIdx.x  + l * k] / -2.0;
+            thread_data /= static_cast<DATA_TYPE>(d_clusters_len[c] *
+                                                  d_clusters_len[c]);
+            atomicAdd(&sum, thread_data);
+        }
+    }
+    */
 
-    /* Intra-block reduction */
+    /* Intra-block reduction 
     unsigned long long cluster_i = k+2;
     unsigned long long cluster_j = k+1;
 
@@ -1254,11 +1273,14 @@ __global__ void sum_centroids(const DATA_TYPE * d_K,
     }
 
     __syncthreads();
+    */
 
     /* Reduce to global mem */
-    if (threadIdx.x < k) {
-        atomicAdd(d_centroids + threadIdx.x, centroid_sums[threadIdx.x]);
-    }
+    //if (threadIdx.x < k) {
+        //atomicAdd(d_centroids + threadIdx.x, centroid_sums[threadIdx.x]);
+    //}
+    //d_centroids[blockIdx.x] = sum;
+    
 
 }
 
