@@ -385,6 +385,7 @@ __global__ void compute_v_sparse_csr_permuted(DATA_TYPE * d_vals,
                                              ClusterIter d_points_clusters,
                                              uint32_t * d_clusters_len,
                                              uint32_t * d_clusters_offsets,
+                                             uint32_t * d_perm_vec,
                                              const size_t n,
                                              const uint32_t k)
 {
@@ -403,10 +404,11 @@ __global__ void compute_v_sparse_csr_permuted(DATA_TYPE * d_vals,
     */
     const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
     if (tid < n) {
-        const uint32_t cluster = d_points_clusters[tid];
-        const uint32_t idx = atomicAdd(d_clusters_offsets + cluster, 1);
-        d_vals[idx] = 1 / (DATA_TYPE)(d_clusters_len[cluster]);
-        d_colinds[idx] = idx;
+        const uint32_t idx = d_perm_vec[tid];
+        const uint32_t cluster = d_points_clusters[idx];
+        //const uint32_t idx = atomicAdd(d_clusters_offsets + cluster, 1);
+        d_vals[tid] = 1 / (DATA_TYPE)(d_clusters_len[cluster]);
+        d_colinds[tid] = tid;
     }
     d_row_offsets[k] = n;
 }

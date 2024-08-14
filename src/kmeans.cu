@@ -411,6 +411,8 @@ void Kmeans::init_centroids_rand()
                    sizeof(uint32_t)*k,
                    cudaMemcpyDeviceToDevice);
 
+        set_perm_vec(d_clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
+
         compute_v_sparse_csr_permuted<<<v_mat_grid_dim, v_mat_block_dim>>>
         (
           d_V_vals,
@@ -419,13 +421,13 @@ void Kmeans::init_centroids_rand()
           d_clusters,
           d_clusters_len,
           thrust::raw_pointer_cast(d_cluster_offsets.data()),
+          d_perm_vec,
           n, k
         );
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-        thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k, d_cluster_offsets.begin());
+        //thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k, d_cluster_offsets.begin());
 
-        set_perm_vec(d_clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
         permute_kernel_mat();
 
     } else if (level>0) {
@@ -1022,6 +1024,8 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
                        sizeof(uint32_t)*k,
                        cudaMemcpyDeviceToDevice);
 
+            set_perm_vec(clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
+
             compute_v_sparse_csr_permuted<<<v_mat_grid_dim, v_mat_block_dim>>>
             (
               d_V_vals,
@@ -1030,14 +1034,14 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
               clusters,
               d_clusters_len,
               thrust::raw_pointer_cast(d_cluster_offsets.data()),
+              d_perm_vec,
               n, k
             );
             CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-            thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
-                                    d_cluster_offsets.begin());
+            //thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
+            //                        d_cluster_offsets.begin());
 
-            set_perm_vec(clusters, thrust::raw_pointer_cast(d_cluster_offsets.data()));
 
             /* After a few iterations, most points are stationary */
             if (iter > 3 && false) {

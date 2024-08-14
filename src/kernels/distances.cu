@@ -724,8 +724,13 @@ __global__ void init_z_permuted(const uint32_t n, const uint32_t k,
 {
     const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
     if (tid < n) {
+        /*
         const int32_t rid = d_clusters[tid];
         const uint32_t z_idx = d_perm_vec[tid];
+        d_z_vals[tid] = d_distances[rid + (k*z_idx)];
+        */
+        const uint32_t z_idx = d_perm_vec[tid];
+        const int32_t rid = d_clusters[z_idx];
         d_z_vals[tid] = d_distances[rid + (k*z_idx)];
     }
 }
@@ -1012,31 +1017,12 @@ void compute_distances_popcorn_spmv(const cusparseHandle_t& handle,
         kvt_out<<std::endl;
     }
     kvt_out.close();
-    */
 
+    */
 
 	DATA_TYPE * d_c_norms;
 
     /* Setup z */
-    // cuSPARSE does not let you fetch individual sparse matrix fields, you have to do all of them
-    int32_t * V_colptrs;
-    int32_t * V_rowinds;
-    DATA_TYPE * V_vals;
-    int64_t rows, cols, nnz;
-    cusparseIndexType_t col_type, row_type;
-    cusparseIndexBase_t base;
-    cudaDataType vals_type;
-
-    /*
-    CHECK_CUSPARSE_ERROR(cusparseCscGet(V,
-                                        &rows, &cols, &nnz,
-                                        (void**)&V_colptrs,
-                                        (void**)&V_rowinds,
-                                        (void**)&V_vals,
-                                        &col_type, &row_type,
-                                        &base,
-                                        &vals_type));
-                                        */
     DATA_TYPE * d_z_vals;
     CHECK_CUSPARSE_ERROR(cusparseDnVecGetValues(z, (void**)&d_z_vals));
 
@@ -1083,11 +1069,6 @@ void compute_distances_popcorn_spmv(const cusparseHandle_t& handle,
     /* Now we can add norms to d_distances */
     const uint32_t block_dim = 64;//min(n*k, 1024); //TODO Replace with device props max threads 
     const uint32_t grid_dim = ceil((float)n*k / (float)block_dim);
-    /*
-    add_norm_mtx_permuted<<<grid_dim, block_dim>>>(n, k, d_points_row_norms, d_c_norms,
-                                            d_perm_vec,
-                                            d_distances);
-                                            */
     add_norm_mtx<<<grid_dim, block_dim>>>(n, k, d_c_norms,
                                         d_distances);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
