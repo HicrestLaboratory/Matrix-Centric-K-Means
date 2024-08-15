@@ -20,7 +20,7 @@ int main(int argc, char **argv) {
   int     *seed = NULL;
   InputParser<DATA_TYPE> *input = NULL;
   bool check_converged;
-  string dist_method_str, init_method_str, kernel_str;
+  string init_method_str, kernel_str;
   int level;
 
   parse_input_args(argc, argv, 
@@ -28,7 +28,6 @@ int main(int argc, char **argv) {
                     &maxiter, out_file, 
                     &tol, &runs, &seed, &input,
                     &check_converged,
-                    dist_method_str,
                     init_method_str,
                     kernel_str,
                     &level);
@@ -61,16 +60,6 @@ int main(int argc, char **argv) {
   double init_time = 0;
   double score = 0;
 
-  Kmeans::DistanceMethod dist_method;
-  if (dist_method_str.compare("gemm")==0) {
-      dist_method = Kmeans::DistanceMethod::gemm;
-  } else if (dist_method_str.compare("spmm")==0) {
-      dist_method = Kmeans::DistanceMethod::spmm;
-  } else {
-      printf("Invalid distance method: %s\n", dist_method_str.c_str()); 
-      exit(1);
-  }
-
   Kmeans::InitMethod init_method;
   if (init_method_str.compare("random")==0) {
       init_method = Kmeans::InitMethod::random;
@@ -89,8 +78,6 @@ int main(int argc, char **argv) {
       kernel= Kmeans::Kernel::polynomial;
   } else if (kernel_str.compare("sigmoid")==0) {
       kernel= Kmeans::Kernel::sigmoid;
-  } else if (kernel_str.compare("rbf")==0) {
-      kernel= Kmeans::Kernel::rbf;
   } else {
       printf("Invalid kernel: %s\n", kernel_str.c_str());
       exit(1);
@@ -101,7 +88,6 @@ int main(int argc, char **argv) {
     const auto init_start = chrono::high_resolution_clock::now();
     Kmeans kmeans(n, d, k, tol, seed, input->get_dataset(), &deviceProp,
                     init_method,
-                    dist_method,
                     kernel,
                     level);
     const auto init_end = chrono::high_resolution_clock::now();

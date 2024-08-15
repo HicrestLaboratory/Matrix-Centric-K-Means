@@ -72,7 +72,6 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
                 const float _tol, const int* seed, 
                 Point<DATA_TYPE>** _points, cudaDeviceProp* _deviceProps,
                 const InitMethod _initMethod,
-                const DistanceMethod _distMethod,
                 const Kernel _kernel,
                 const int _level)
                 : n(_n), d(_d), k(_k), tol(_tol),
@@ -82,7 +81,6 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
                 points(_points),
                 deviceProps(_deviceProps),
                 initMethod(_initMethod),
-                dist_method(_distMethod),
                 level(_level)
 {
 #if LOG_PERM
@@ -170,10 +168,6 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
         case Kernel::sigmoid:
             init_kernel_mtx<SigmoidKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B, level);
             break;
-
-        case Kernel::rbf:
-            init_kernel_mtx<RBFKernel>(cublasHandle, deviceProps, n, k, d, d_points, d_B, level);
-            break;
     }
 
 #ifdef LOG_KERNEL
@@ -217,12 +211,9 @@ Kmeans::Kmeans (const size_t _n, const uint32_t _d, const uint32_t _k,
 	CHECK_CUDA_ERROR(cudaFree(d_points));
 
     /* Init matrix buffers */
-    CHECK_CUDA_ERROR(cudaMalloc(&d_B_new, sizeof(DATA_TYPE)*n*n)); //TODO: Make this symmetric
-
     CHECK_CUDA_ERROR(cudaMalloc(&d_V_vals, sizeof(DATA_TYPE)*n));
     CHECK_CUDA_ERROR(cudaMalloc(&d_V_colinds, sizeof(int32_t)*n));
     CHECK_CUDA_ERROR(cudaMalloc(&d_V_rowptrs, sizeof(int32_t)*(k+1)));
-
 
     h_centroids_matrix = NULL;
 
@@ -326,6 +317,9 @@ Kmeans::~Kmeans ()
 
     if (d_B != NULL) {
         CHECK_CUDA_ERROR(cudaFree(d_B));
+    }
+
+    if (do_reorder) {
         CHECK_CUDA_ERROR(cudaFree(d_B_new));
     }
 
@@ -426,8 +420,6 @@ void Kmeans::init_centroids_rand()
         );
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-        //thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k, d_cluster_offsets.begin());
-
         permute_kernel_mat();
 
     } else if (level>0) {
@@ -454,7 +446,7 @@ void Kmeans::init_centroids_rand()
 
 void Kmeans::init_centroids_plus_plus()
 {
-#ifdef PLUSPLUS //This is here because otherwise this takes literally 10 MINUTES to compile
+#ifdef PLUSPLUS //This is here because otherwise this takes literally 10 minutes to compile
 #if LOG
     std::ofstream centroids_out;
     centroids_out.open("our-centroids.out");
@@ -820,7 +812,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
                                              CUDA_R_32F,
                                              CUSPARSE_ORDER_COL));
 
-    //CHECK_CUDA_ERROR(cudaMalloc(&d_clusters_len, k * sizeof(uint32_t)));
     thrust::device_ptr<uint32_t> d_clusters_len_ptr(d_clusters_len);
     thrust::device_vector<uint32_t> d_cluster_offsets(k);
 
@@ -917,8 +908,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
 #endif
 
-
-
 		////////////////////////////////////////* ASSIGN POINTS TO NEW CLUSTERS */////////////////////////////////////////
 
 #if PERFORMANCES_KERNEL_ARGMIN
@@ -973,26 +962,8 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
 
 #endif
 
-        if (level==NAIVE_GPU || true) {
-            thrust::device_ptr<int32_t> d_clusters_ptr(d_clusters);
-            thrust::copy(clusters, clusters+n, d_clusters_ptr);
-        }
-
-#if LOG
-        /*
-        thrust::device_vector<uint32_t> d_clusters(n);
-        thrust::copy(clusters, clusters+n, d_clusters.begin());
-        uint32_t * h_clusters = new uint32_t[n];
-        cudaMemcpy(h_clusters, thrust::raw_pointer_cast(d_clusters.data()), sizeof(uint32_t)*n, cudaMemcpyDeviceToHost);
-        centroids_out<<"CLUSTERS"<<std::endl;
-        for (int i=0; i<n; i++) {
-            centroids_out<<h_clusters[i]<<",";
-        }
-        centroids_out<<std::endl;
-        delete[] h_clusters;
-        */
-#endif
-
+        thrust::device_ptr<int32_t> d_clusters_ptr(d_clusters);
+        thrust::copy(clusters, clusters+n, d_clusters_ptr);
 
 		///////////////////////////////////////////* COMPUTE NEW CENTROIDS *///////////////////////////////////////////
 
@@ -1039,16 +1010,7 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
             );
             CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-            //thrust::exclusive_scan(d_clusters_len_ptr, d_clusters_len_ptr+k,
-            //                        d_cluster_offsets.begin());
-
-
-            /* After a few iterations, most points are stationary */
-            if (iter > 3 && false) {
-                permute_kernel_mat_swap(d_indices);
-            } else {
-                permute_kernel_mat();
-            }
+            permute_kernel_mat();
 
         } else if (level > 0) {
 
@@ -1066,30 +1028,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
               thrust::raw_pointer_cast(d_cluster_offsets.data()),
               n, k
             );
-
-            /*
-            std::vector<DATA_TYPE> h_vals(n);
-            std::vector<int32_t> h_colinds(n);
-            std::vector<int32_t> h_rowptrs(k+1);
-            std::vector<uint32_t> h_cluster_lens(k);
-            std::vector<uint32_t> h_clusters(n);
-
-            cudaMemcpy(h_cluster_lens.data(),
-                       d_clusters_len,
-                       sizeof(uint32_t)*k,
-                       cudaMemcpyDeviceToHost);
-
-            thrust::copy(clusters, clusters+n, d_clusters.begin());
-
-            cudaMemcpy(h_clusters.data(),
-                       d_clusters,
-                       sizeof(uint32_t)*n,
-                       cudaMemcpyDeviceToHost);
-
-            for (int i=0; i<n; i++) {
-            */
-
-
 
             CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         }
@@ -1121,14 +1059,9 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
                                                 raft::value_op{},
                                                 raft::add_op{});
         score = d_score.value(stream);
-        std::cout<<std::fixed<<score<<std::endl;
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
         if (iter==maxiter) {
-            /*
-            thrust::copy(clusters, clusters+n, d_clusters.begin());
-            thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
-            */
             break;
         }
 
@@ -1136,10 +1069,6 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
             (iter > 1) &&
             (std::abs(score-last_score) < tol)) {
             converged = iter;
-            /*
-            thrust::copy(clusters, clusters+n, d_clusters.begin());
-            thrust::copy(d_clusters.begin(), d_clusters.end(), h_points_clusters.begin());
-            */
             break;
         }
 
@@ -1151,6 +1080,11 @@ uint64_t Kmeans::run (uint64_t maxiter, bool check_converged)
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
 	}
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_points_clusters.data(),
+                                d_clusters,
+                                sizeof(uint32_t)*n,
+                                cudaMemcpyDeviceToHost));
 
 #if LOG
     centroids_out.close();
@@ -1228,12 +1162,6 @@ void Kmeans::permute_kernel_mat()
         n2,
         d_B_new_ptr
     );
-
-
-    /* Set B pointer 
-    CHECK_CUSPARSE_ERROR(cusparseDnMatSetValues(B_descr, d_B_new));
-    std::swap(d_B, d_B_new);
-    */
 }
 
 
@@ -1260,19 +1188,9 @@ void Kmeans::permute_kernel_mat_swap(thrust::device_vector<uint32_t> d_indices)
      * Compute key value pairs indicating which rows of K should be swapped.
      * This can be done using thrust::copy_if
      */
-    uint32_t * h_moved  = new uint32_t[n];
-    cudaMemcpy(h_moved, thrust::raw_pointer_cast(d_moved.data()), sizeof(uint32_t)*n,
-                    cudaMemcpyDeviceToHost);
-
-    for (int i=0; i<n; i++) 
-        std::cout<<h_moved[i]<<std::endl;
-
-    delete[] h_moved;
 
     /* Count the number of nonzero indices */
     int nnz = thrust::count_if(d_moved.begin(), d_moved.end(), is_nonzero());
-
-    std::cout<<"NNZ: "<<nnz<<std::endl;
 
     /* If nnz==0, no points have moved, and we don't have to do anything */
     if (nnz==0)
@@ -1341,12 +1259,4 @@ void Kmeans::permute_kernel_mat_swap(thrust::device_vector<uint32_t> d_indices)
     }
 
 }
-
-
-
-
-
-
-
-
 

@@ -23,12 +23,11 @@
 #define ARG_RUNS        "runs"
 #define ARG_SEED        "seed"
 #define ARG_CHECK       "check"
-#define ARG_PWDIST      "pwdist"
 #define ARG_INIT        "init"
 #define ARG_FUNCTION    "kernel"
 #define ARG_LEVEL       "level"
 
-const char* ARG_STR[]   = {"dimensions", "n-samples", "clusters", "maxiter", "out-file", "in-file", "tolerance", "check", "pwdist", "init", "kernel", "level"};
+const char* ARG_STR[]   = {"dimensions", "n-samples", "clusters", "maxiter", "out-file", "in-file", "tolerance", "check", "init", "kernel", "level"};
 const float DEF_EPSILON = numeric_limits<float>::epsilon();
 const int   DEF_RUNS    = 1;
 
@@ -94,7 +93,7 @@ void parse_input_args(const int argc, const char *const *argv,
                       uint32_t *d, size_t *n, uint32_t *k, 
                       size_t *maxiter, string &out_file, float *tol, 
                       uint32_t *runs, int **seed, InputParser<DATA_TYPE> **input, 
-                      bool * check_converged, string& dist_method,
+                      bool * check_converged, 
                       string& init_method,
                       string& kernel,
                       int * level) {
@@ -114,7 +113,6 @@ void parse_input_args(const int argc, const char *const *argv,
     ("s," ARG_SEED,     "Seed for centroids generator",     cxxopts::value<int>())
     ("t," ARG_TOL,      "Tolerance to declare convergence", cxxopts::value<float>()->default_value(to_string(DEF_EPSILON)))
     ("c," ARG_CHECK, "Whether or not to check convergence", cxxopts::value<int>()->default_value(to_string(_false)))
-    ("p," ARG_PWDIST, "Method to use for pairwise distances", cxxopts::value<string>())
     ("b," ARG_INIT, "Method to use to initialize centroids", cxxopts::value<string>())
     ("f," ARG_FUNCTION, "kernel function", cxxopts::value<string>())
     ("l," ARG_LEVEL,  "Optimization level",     cxxopts::value<int>());
@@ -136,7 +134,6 @@ void parse_input_args(const int argc, const char *const *argv,
   *tol      = getArg_f(args, ARG_TOL,      &DEF_EPSILON);
   *runs     = getArg_u(args, ARG_RUNS,     &DEF_RUNS);
   *check_converged = getArg_u(args, ARG_CHECK, &(_false));
-  dist_method = getArg_s(args, ARG_PWDIST, NULL);
   init_method = getArg_s(args, ARG_INIT, NULL);
   kernel = getArg_s(args, ARG_FUNCTION, NULL);
   *level = getArg_u(args, ARG_LEVEL, NULL);

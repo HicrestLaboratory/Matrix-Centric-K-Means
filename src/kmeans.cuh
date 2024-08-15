@@ -54,31 +54,12 @@ class Kmeans {
         plus_plus
     };
 
-    enum class DistanceMethod
-    {
-        gemm,
-        spmm
-    };
-
     enum class Kernel 
     {
         linear,
         polynomial,
         sigmoid,
-        rbf
     };
-
-	template <typename IndexT, typename DataT>
-	struct KeyValueIndexScaleOp {
-     
-        IndexT * d_offsets;
-
-	  __host__ __device__ __forceinline__ IndexT
-	  operator()(const raft::KeyValuePair<IndexT, DataT>& a) const
-	  {
-		return a.key + d_offsets[a.key];
-	  }
-	};
 
 	template <typename IndexT, typename DataT>
 	struct KeyValueIndexOp {
@@ -135,7 +116,6 @@ class Kmeans {
 
     Kmeans(const size_t n, const uint32_t d, const uint32_t k, const float tol, const int *seed, Point<DATA_TYPE>** points, cudaDeviceProp* deviceProps,
             InitMethod _initMethod=InitMethod::random,
-            DistanceMethod _distMethod=DistanceMethod::gemm,
             Kernel _kernel=Kernel::linear,
             int _level=3);
     ~Kmeans();
@@ -216,8 +196,6 @@ class Kmeans {
 
     cublasHandle_t cublasHandle;
     cusparseHandle_t cusparseHandle;
-
-    DistanceMethod dist_method;
 
     /**
      * @brief Select k random centroids sampled form points

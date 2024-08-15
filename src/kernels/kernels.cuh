@@ -38,80 +38,51 @@ enum class KernelMtxMethod {
 };
 
 
-__global__ void sigmoid(const uint32_t n,
-                               DATA_TYPE * d_B,
-                               const DATA_TYPE gamma,
-                               const DATA_TYPE coef);
-
-__global__ void polynomial(const uint32_t n,
-                                   DATA_TYPE * d_B,
-                                   const DATA_TYPE gamma,
-                                   const DATA_TYPE coef,
-                                   const DATA_TYPE deg);
-__global__ void polynomial_inv(const uint32_t n,
-                                   DATA_TYPE * d_B,
-                                   const DATA_TYPE gamma,
-                                   const DATA_TYPE coef,
-                                   const uint32_t deg);
-
-__global__ void rbf(const uint32_t n,
-                    DATA_TYPE * d_B,
-                    const DATA_TYPE gamma);
-
-
-__global__ void linear(const uint32_t n,
-                       DATA_TYPE * d_B);
-
-
 /* Kernel structs */
 
 struct LinearKernel 
 {
 
-    static std::pair<uint32_t, uint32_t> get_grid_params(const uint32_t n) 
+    struct LinearUnaryOp 
     {
-        const uint32_t max_tpb = 1024;
-        const uint32_t tpb = std::min(n*n, max_tpb);
-        const uint32_t blocks = std::ceil( static_cast<float>(n*n) / static_cast<float>(tpb) );
-        return {blocks, tpb};
-    }
+        __host__ __device__
+        DATA_TYPE operator()(const DATA_TYPE& elem)
+        {
+            return -2.0*(elem);
+        }
+    };
 
     static void function(const uint32_t n,
                          const uint32_t d,
                          DATA_TYPE * d_B)
     {
-        auto params = get_grid_params(n);
-
-        linear<<<params.first, params.second>>>(n, d_B);
+        thrust::device_ptr<DATA_TYPE> d_B_ptr(d_B);
+        unsigned long long offset = static_cast<unsigned long long>(n)*static_cast<unsigned long long>(n);
+        thrust::transform(d_B_ptr, d_B_ptr+offset, d_B_ptr, LinearUnaryOp());
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     }
 };
 
 
-//TODO: change other kernel functions to have a op struct like polynomial kernel 
 struct SigmoidKernel 
 {
-
-    static std::pair<uint32_t, uint32_t> get_grid_params(const uint32_t n) 
+    struct SigmoidUnaryOp
     {
-        const uint32_t max_tpb = 1024;
-        const uint32_t tpb = std::min(n*n, max_tpb);
-        const uint32_t blocks = std::ceil( static_cast<float>(n*n) / static_cast<float>(tpb) );
-        return {blocks, tpb};
-    }
+        __host__ __device__
+        DATA_TYPE operator()(const DATA_TYPE& elem)
+        {
+            return -2.0*(tanhf(elem + 1));
+        }
+    };
 
     static void function(const uint32_t n,
                          const uint32_t d,
                          DATA_TYPE * d_B)
     {
-
-
-        const DATA_TYPE gamma = 0.5;// / static_cast<float>(d);
-        const DATA_TYPE coef = 1;
-
-        auto params = get_grid_params(n);
-
-        sigmoid<<<params.first, params.second>>>(n, d_B, gamma, coef);
-
+        thrust::device_ptr<DATA_TYPE> d_B_ptr(d_B);
+        unsigned long long offset = static_cast<unsigned long long>(n)*static_cast<unsigned long long>(n);
+        thrust::transform(d_B_ptr, d_B_ptr+offset, d_B_ptr, SigmoidUnaryOp());
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     }
 
 };
@@ -120,13 +91,6 @@ struct SigmoidKernel
 
 struct PolynomialKernel 
 {
-    static std::pair<uint64_t, uint64_t> get_grid_params(const uint32_t n) 
-    {
-        const uint32_t max_tpb = 1024;
-        const uint64_t tpb = std::min(n*n, max_tpb);
-        const uint64_t blocks = std::ceil( static_cast<double>(n*n) / static_cast<double>(tpb) );
-        return {blocks, tpb};
-    }
 
     struct PolynomialUnaryOp
     {
@@ -153,34 +117,6 @@ struct PolynomialKernel
 
 };
 
-
-struct RBFKernel 
-{
-    static std::pair<uint32_t, uint32_t> get_grid_params(const uint32_t n) 
-    {
-        const uint32_t max_tpb = 1024;
-        const uint32_t tpb = std::min(n*n, max_tpb);
-        const uint32_t blocks = std::ceil( static_cast<float>(n*n) / static_cast<float>(tpb) );
-        return {blocks, tpb};
-    }
-
-    static void function(const uint32_t n,
-                         const uint32_t d,
-                         DATA_TYPE * d_B)
-    {
-
-
-        const DATA_TYPE gamma = 1/(DATA_TYPE)d; /// static_cast<float>(d);
-
-        auto params = get_grid_params(n);
-
-        rbf<<<params.first, params.second>>>(n, d_B, gamma);
-
-        cudaDeviceSynchronize();
-
-    }
-
-};
 
 /*////// SCHEDULE FUNCTIONS ///////*/
 
@@ -329,7 +265,7 @@ __global__ void compute_v_sparse(DATA_TYPE * d_vals,
         d_rowinds[tid] = (int32_t)d_points_clusters[tid];
         d_col_offsets[tid] = tid;
     }
-    d_col_offsets[n] = n; //This might be horrible
+    d_col_offsets[n] = n; 
 }
 
 
@@ -389,24 +325,10 @@ __global__ void compute_v_sparse_csr_permuted(DATA_TYPE * d_vals,
                                              const size_t n,
                                              const uint32_t k)
 {
-    /*
-    const uint32_t cluster_len = d_clusters_len[blockIdx.x];
-    const uint32_t bound = ((cluster_len / blockDim.x) + 1) * cluster_len;
-    for (int j=threadIdx.x; j<bound; j+=blockDim.x) {
-        if (j < cluster_len) {
-            const uint32_t idx = d_clusters_sums[blockIdx.x] + j;
-            d_vals[idx] = 1 / (DATA_TYPE)(d_clusters_len[blockIdx.x]);
-            d_colinds[idx] = idx;
-        }
-    }
-    d_row_offsets[blockIdx.x] = d_clusters_sums[blockIdx.x];
-    d_row_offsets[k] = n;
-    */
     const uint32_t tid = threadIdx.x + blockDim.x * blockIdx.x;
     if (tid < n) {
         const uint32_t idx = d_perm_vec[tid];
         const uint32_t cluster = d_points_clusters[idx];
-        //const uint32_t idx = atomicAdd(d_clusters_offsets + cluster, 1);
         d_vals[tid] = 1 / (DATA_TYPE)(d_clusters_len[cluster]);
         d_colinds[tid] = tid;
     }
@@ -442,40 +364,6 @@ __global__ void init_z_permuted(const uint32_t n, const uint32_t k,
                                const int32_t * V_rowinds,
                                const uint32_t * d_perm_vec,
                                DATA_TYPE * d_z_vals);
-
-// Blocked ELLPACK
-// Each thread block should be responsible for points that live in a 2D partition of the 
-// logical view of the matrix
-template <typename ClusterIter>
-__global__ void compute_v_blocked(const uint32_t block_size,
-                                 uint32_t * d_block_inds,
-                                 DATA_TYPE * d_block_vals,
-                                 ClusterIter d_points_clusters,
-                                 const uint32_t * d_clusters_len,
-                                 const uint32_t n,
-                                 const uint32_t k)
-{
-    __shared__ uint32_t block_nnz;
-    block_nnz = 0;
-
-    const uint32_t threads_per_block = blockDim.x * blockDim.y;
-    const uint32_t tid = threadIdx.x + (blockIdx.x + (gridDim.x + blockDim.y)) * threads_per_block;
-
-
-    if (tid < n) {
-        DATA_TYPE val = 1 / (DATA_TYPE)(d_clusters_len[d_points_clusters[tid]]);
-        d_block_vals[tid] = val;
-        atomicAdd(&block_nnz, 1);
-    }
-
-    __syncthreads();
-
-    if (threadIdx.x==0) {
-        d_block_inds[blockIdx.y * blockDim.x + blockIdx.x] = block_nnz;
-    }
-
-}
-
 
                     
 
@@ -718,8 +606,8 @@ void init_kernel_mtx_syrk(cublasHandle_t& cublasHandle,
 
 
     DATA_TYPE * d_B_tmp;
-    CHECK_CUDA_ERROR(cudaMalloc(&d_B_tmp, sizeof(DATA_TYPE)*n*n)); //TODO: Just allocate space for triangular region
-    CHECK_CUDA_ERROR(cudaMemset(d_B_tmp, 0, sizeof(DATA_TYPE)*n*n)); //Just in case
+    CHECK_CUDA_ERROR(cudaMalloc(&d_B_tmp, sizeof(DATA_TYPE)*n*n)); 
+    CHECK_CUDA_ERROR(cudaMemset(d_B_tmp, 0, sizeof(DATA_TYPE)*n*n)); 
 
     CHECK_CUBLAS_ERROR(cublasSsyrk(cublasHandle,
                                    CUBLAS_FILL_MODE_LOWER,
@@ -780,6 +668,8 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
             break;
 
         case NAIVE_MTX:
+            std::cerr<<"ERROR, level "<<NAIVE_MTX<<" should never be used."<<std::endl;
+            exit(1);
             init_kernel_mtx_gemm<Kernel>(cublasHandle, deviceProps,
                                           n, k, d,
                                           d_points, d_B);
@@ -800,6 +690,8 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
         break;
 
         case REORDER:
+            std::cerr<<"ERROR, level "<<REORDER<<" should never be used."<<std::endl;
+            exit(1);
             init_kernel_mtx_syrk<Kernel>(cublasHandle, deviceProps,
                                           n, k, d,
                                           d_points, d_B);
@@ -807,6 +699,8 @@ void init_kernel_mtx(cublasHandle_t& cublasHandle,
 
         case FINAL:
         {
+            std::cerr<<"ERROR, level "<<FINAL<<" should never be used."<<std::endl;
+            exit(1);
             float ratio = static_cast<double>(n) / static_cast<double>(d);
             if (ratio > GEMM_THRESHOLD)
                 init_kernel_mtx_gemm<Kernel>(cublasHandle, deviceProps,

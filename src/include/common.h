@@ -39,7 +39,7 @@
 #define REORDER 3
 #define FINAL 4
 
-#define GEMM_THRESHOLD 500
+#define GEMM_THRESHOLD 100
 
 //#define NVTX
 
